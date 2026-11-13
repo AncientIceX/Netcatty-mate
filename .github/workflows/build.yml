@@ -30,14 +30,6 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK Platform 34 & Build-Tools 34.0.0
-        run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
-
       - name: Install Frontend Dependencies & Build Official Netcatty Bundle
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
@@ -62,98 +54,77 @@ jobs:
 
       - name: Compile & Sign Android APK
         run: |
-          BUILD_TOOLS="$ANDROID_HOME/build-tools/34.0.0"
-          PLATFORM="$ANDROID_HOME/platforms/android-34/android.jar"
-          mkdir -p build/gen build/obj build/dex dist_apk
+          set -e
+          BUILD_TOOLS=$(ls -1 $ANDROID_HOME/build-tools | sort -V | tail -n 1)
+          BT_DIR="$ANDROID_HOME/build-tools/$BUILD_TOOLS"
+          PLATFORM_DIR=$(ls -1d $ANDROID_HOME/platforms/android-* | sort -V | tail -n 1)
+          ANDROID_JAR="$PLATFORM_DIR/android.jar"
+          echo "Using build-tools: $BT_DIR"
+          echo "Using platform: $ANDROID_JAR"
+
+          mkdir -p build_apk/gen build_apk/obj build_apk/dex dist_apk
 
           echo "1. Compiling resources with aapt..."
-          "$BUILD_TOOLS/aapt" package -f -m \
-            -J build/gen \
+          "$BT_DIR/aapt" package -f -m \
+            -J build_apk/gen \
             -M android/AndroidManifest.xml \
             -S android/res \
-            -A android/assets \
-            -I "$PLATFORM"
+            -I "$ANDROID_JAR"
 
           echo "2. Compiling Java sources with javac..."
-          javac -source 11 -target 11 -encoding UTF-8 \
-            -bootclasspath "$PLATFORM" \
-            -classpath "$PLATFORM:build_libs/jsch.jar:build_libs/bcprov.jar" \
-            -d build/obj \
-            build/gen/de/newaii/netcatty/R.java \
-            android/src/de/newaii/netcatty/MainActivity.java
+          javac -source 1.8 -target 1.8 -encoding UTF-8 \
+            -bootclasspath "$ANDROID_JAR" \
+            -classpath "$ANDROID_JAR:build_libs/jsch.jar:build_libs/bcprov.jar" \
+            -d build_apk/obj \
+            build_apk/gen/de/newaii/netcatty/R.java \
+            android/src/de/newaii/netcatty/*.java
 
           echo "3. Converting bytecode + JSch + BouncyCastle to DEX with d8..."
-          JAR_CLASSES=$(find build/obj -name "*.class")
-          "$BUILD_TOOLS/d8" --min-api 24 \
-            --lib "$PLATFORM" \
-            --output build/dex \
+          JAR_CLASSES=$(find build_apk/obj -name "*.class")
+          "$BT_DIR/d8" --lib "$ANDROID_JAR" --min-api 24 --release --output build_apk/dex \
             $JAR_CLASSES \
             build_libs/jsch.jar \
             build_libs/bcprov.jar
 
           echo "4. Packaging unsigned APK..."
-          "$BUILD_TOOLS/aapt" package -f \
+          "$BT_DIR/aapt" package -f \
             -M android/AndroidManifest.xml \
             -S android/res \
             -A android/assets \
-            -I "$PLATFORM" \
-            -F build/unsigned.apk
+            -I "$ANDROID_JAR" \
+            -0 png -0 jpg -0 webp -0 svg -0 woff2 -0 ttf -0 wasm \
+            -F build_apk/unsigned.apk build_apk/dex
 
-          echo "5. Adding DEX files to APK..."
-          cd build/dex
-          zip -q ../unsigned.apk classes*.dex
-          cd ../..
+          echo "5. Zipaligning APK..."
+          "$BT_DIR/zipalign" -f -p 4 build_apk/unsigned.apk build_apk/aligned.apk
 
-          echo "6. Zipaligning APK..."
-          "$BUILD_TOOLS/zipalign" -f 4 build/unsigned.apk build/aligned.apk
-
-          echo "7. Signing APK..."
-          keytool -genkeypair \
+          echo "6. Signing APK..."
+          keytool -genkeypair -v \
+            -keystore build_apk/release.keystore \
             -alias netcattykey \
             -keyalg RSA \
             -keysize 2048 \
             -validity 10000 \
-            -keystore build/release.keystore \
             -storepass netcatty123 \
             -keypass netcatty123 \
             -dname "CN=Netcatty Mate, OU=Mobile, O=Newaii, L=Cloud, S=Cloud, C=DE"
 
-          "$BUILD_TOOLS/apksigner" sign \
-            --ks build/release.keystore \
+          "$BT_DIR/apksigner" sign \
+            --ks build_apk/release.keystore \
             --ks-key-alias netcattykey \
             --ks-pass pass:netcatty123 \
             --key-pass pass:netcatty123 \
             --out dist_apk/Netcatty-Mate-v3.0.0-Android.apk \
-            build/aligned.apk
+            build_apk/aligned.apk
 
           ls -lh dist_apk/Netcatty-Mate-v3.0.0-Android.apk
 
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Netcatty-Mate-v3.0.0-Android
-          path: dist_apk/Netcatty-Mate-v3.0.0-Android.apk
-
-      - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          name: "Netcatty Mate Mobile ${{ github.ref_name }} (Official Netcatty UI + JSch SSHv2/SFTP)"
-          body: |
-            ## Netcatty Mate Mobile ${{ github.ref_name }} (Android Edition)
-            Built directly from the official **Netcatty** React 19 + TypeScript + Tailwind CSS + Radix UI + xterm.js 5.5.0 codebase (`AncientIceX/Netcatty-mate`), paired with our native Android **JSch 0.2.21 + BouncyCastle 1.79** SSHv2/SFTP/PortForwarding engine.
-
-            ### Highlights
-            - **100% Authentic Netcatty UI & Themes**: Original Vaults, Hosts grid/list/tree views, Distro avatars, Keychain manager, Snippets manager, Port Forwarding, Known Hosts, Server Monitor, System Manager (Processes, Docker, Ports, Systemd), and 10+ official Dark/Light UI & Terminal themes.
-            - **Mobile Responsive & Touch Adapted**:
-              - In-app full-screen Settings overlay with horizontal scrollable tab bar on mobile screens.
-              - Responsive full-width AsidePanels for Host Details, Keychain, Snippets, and Port Forwarding editors.
-              - Single-pane / Split-pane switcher (`Remote SFTP` / `Local Sandbox` / `Split`) in SFTP view.
-              - Dedicated mobile terminal touch keybar (`ESC`, `TAB`, `CTRL`, `ALT`, arrows, `HOME`/`END`, `PGUP`/`PGDN`, `CTRL+C/D/Z/L`, `/`, `-`, `|`, `~`, `CMD`).
-            - **Strict Pull-Only Cloud Sync & SFTP Protection**:
-              - **Cloud Sync (GitHub Gist / WebDAV / S3)**: Strictly read-only pull & merge (`downloadFromProvider`). Never uploads, overwrites, or deletes remote cloud vaults.
-              - **SFTP**: Strictly read-only on remote servers (`openSftp`, `listSftp`, `statSftp`, `readSftp`, and streaming download to local Android storage). Remote upload/write/delete/mkdir operations are blocked.
-          files: |
-            dist_apk/Netcatty-Mate-v3.0.0-Android.apk
-          draft: false
-          prerelease: false
+      - name: Publish GitHub Release v3.0.0
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v3.0.0"
+          gh release delete "$TAG" --yes || true
+          gh release create "$TAG" dist_apk/Netcatty-Mate-v3.0.0-Android.apk \
+            --title "Netcatty Mate v3.0.0 (原版 Netcatty UI 移动版 + JSch SSHv2/SFTP 完整客户端)" \
+            --notes "直接基于开源原版 Netcatty (React 19 + TypeScript + Tailwind CSS + Radix UI + xterm.js 5.5.0) 源码深度适配打造的原汁原味手机版，底层搭载原生 Android JSch 0.2.21 + BouncyCastle 1.79 引擎：完整保留原版 Vaults 主机墙/列表/树状视图、官方发行版图标、密钥链管理、Snippets 代码片段、端口转发、Known Hosts、实时 Server Monitor、右侧/底部 System Manager（进程/Docker/监听端口/Systemd 服务）以及 10+ 套原版暗黑/亮色主题；针对手机触屏优化了应用内全屏设置面板、全宽抽屉详情栏、SFTP 单双栏切换与终端底部虚拟扩展按键栏；严格锁定「只下拉同步，不上传同步」（云同步仅从云端只读拉取合并，SFTP 仅允许从远端服务器下载至本地沙盒）。"
