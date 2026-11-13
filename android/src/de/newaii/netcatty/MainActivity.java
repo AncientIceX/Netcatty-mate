@@ -21,6 +21,7 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.webkit.ConsoleMessage;
 import android.webkit.JavascriptInterface;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
@@ -2273,12 +2274,15 @@ public class MainActivity extends Activity {
         if (keyCode == KeyEvent.KEYCODE_BACK && webView != null) {
             webView.evaluateJavascript(
                     "(function(){ if(window.__handleAndroidBack && window.__handleAndroidBack()) return true; return false; })()",
-                    value -> {
-                        if (!"true".equals(value)) {
-                            if (webView.canGoBack()) {
-                                webView.goBack();
-                            } else {
-                                moveTaskToBack(true);
+                    new ValueCallback<String>() {
+                        @Override
+                        public void onReceiveValue(String value) {
+                            if (!"true".equals(value)) {
+                                if (webView.canGoBack()) {
+                                    webView.goBack();
+                                } else {
+                                    moveTaskToBack(true);
+                                }
                             }
                         }
                     });
