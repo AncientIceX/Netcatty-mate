@@ -303,13 +303,17 @@ export const AsidePanelStack: React.FC<AsidePanelStackProps> = ({
 
     const currentItem = stack[stack.length - 1];
     const canGoBack = stack.length > 1;
+    const isNarrowMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+    const effectiveLayout = isNarrowMobile ? 'overlay' : layout;
     const inlineWidth = useMemo(() => resolveInlineWidth(width), [width]);
-    const inlineStyle = layout === 'inline'
+    const inlineStyle = effectiveLayout === 'inline'
         ? ({
             width: inlineWidth,
             ['--aside-inline-width' as string]: inlineWidth,
         } as React.CSSProperties)
-        : undefined;
+        : isNarrowMobile
+            ? ({ width: '100%' } as React.CSSProperties)
+            : undefined;
 
     // Reset stack when panel closes/opens
     React.useEffect(() => {
@@ -323,15 +327,16 @@ export const AsidePanelStack: React.FC<AsidePanelStackProps> = ({
     return (
         <AsidePanelContext.Provider value={{ push, pop, replace, clear, canGoBack, currentItem }}>
             <div className={cn(
-                layout === 'inline'
+                effectiveLayout === 'inline'
                     ? "relative split-panel-enter shrink-0 h-full min-h-0 max-w-full border-l border-border/60 bg-background flex flex-col app-no-drag overflow-hidden shadow-[-16px_0_32px_hsl(var(--foreground)/0.08)]"
                     : "absolute right-0 top-0 bottom-0 max-w-full border-l border-border/60 bg-background z-30 flex flex-col app-no-drag overflow-hidden",
-                layout === 'overlay' && width,
+                effectiveLayout === 'overlay' && !isNarrowMobile && width,
+                isNarrowMobile && "w-full inset-x-0 border-l-0",
                 className
             )}
             style={inlineStyle}
             data-section={dataSection}
-            data-native-view-occluder={layout === 'overlay' ? '' : undefined}>
+            data-native-view-occluder={effectiveLayout === 'overlay' ? '' : undefined}>
                 <AsidePanelHeader
                     title={currentItem.title}
                     subtitle={currentItem.subtitle}
@@ -370,16 +375,20 @@ export const AsidePanel: React.FC<AsidePanelProps> = ({
         resizable ? readPersistedAsideWidth(persistWidthStorageKey, fallbackWidthPx) : fallbackWidthPx,
     );
     const [isResizing, setIsResizing] = useState(false);
+    const isNarrowMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+    const effectiveLayout = isNarrowMobile ? 'overlay' : layout;
     const effectivePanelWidthPx = resizable ? panelWidthPx : fallbackWidthPx;
     // Resizable panels always use pixel width so overlay and inline share the same drag path.
-    const usesPixelWidth = resizable || layout === 'inline';
+    const usesPixelWidth = !isNarrowMobile && (resizable || effectiveLayout === 'inline');
 
-    const panelStyle = usesPixelWidth
-        ? ({
-            width: `${effectivePanelWidthPx}px`,
-            ['--aside-inline-width' as string]: `${effectivePanelWidthPx}px`,
-        } as React.CSSProperties)
-        : undefined;
+    const panelStyle = isNarrowMobile
+        ? ({ width: '100%' } as React.CSSProperties)
+        : usesPixelWidth
+            ? ({
+                width: `${effectivePanelWidthPx}px`,
+                ['--aside-inline-width' as string]: `${effectivePanelWidthPx}px`,
+            } as React.CSSProperties)
+            : undefined;
 
     const handleResizeStart = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
         if (!resizable) return;
@@ -422,10 +431,11 @@ export const AsidePanel: React.FC<AsidePanelProps> = ({
 
     return (
         <div className={cn(
-            layout === 'inline'
+            effectiveLayout === 'inline'
                 ? "relative split-panel-enter shrink-0 h-full min-h-0 max-w-full border-l border-border/60 bg-background flex flex-col app-no-drag overflow-hidden shadow-[-16px_0_32px_hsl(var(--foreground)/0.08)]"
                 : "absolute right-0 top-0 bottom-0 max-w-full border-l border-border/60 bg-background z-30 flex flex-col app-no-drag overflow-hidden",
-            layout === 'overlay' && !usesPixelWidth && width,
+            effectiveLayout === 'overlay' && !usesPixelWidth && !isNarrowMobile && width,
+            isNarrowMobile && "w-full inset-x-0 border-l-0",
             isResizing && 'transition-none',
             className,
         )}
@@ -433,8 +443,8 @@ export const AsidePanel: React.FC<AsidePanelProps> = ({
         data-section={dataSection}
         // Overlay panels float above content; native views (host browser)
         // must yield where they overlap instead of drawing over the panel.
-        data-native-view-occluder={layout === 'overlay' ? '' : undefined}>
-            {resizable ? (
+        data-native-view-occluder={effectiveLayout === 'overlay' ? '' : undefined}>
+            {resizable && !isNarrowMobile ? (
                 <div
                     role="separator"
                     aria-orientation="vertical"

@@ -1,5 +1,6 @@
 import { StrictMode, Suspense, lazy } from 'react';
 import ReactDOM from 'react-dom/client';
+import { installAndroidBridgePolyfill } from './infrastructure/mobile/androidBridgePolyfill';
 import '@fontsource/mona-sans/400.css';
 import '@fontsource/mona-sans/500.css';
 import '@fontsource/mona-sans/600.css';
@@ -17,6 +18,9 @@ import { loadLocaleMessages } from './application/i18n/messages';
 import { DEFAULT_UI_LOCALE, resolveSupportedLocale } from './infrastructure/config/i18n';
 import { STORAGE_KEY_UI_LANGUAGE } from './infrastructure/config/storageKeys';
 import { localStorageAdapter } from './infrastructure/persistence/localStorageAdapter';
+
+// Install Android NativeBridge -> window.netcatty polyfill before app initialization
+installAndroidBridgePolyfill();
 
 // Startup timeline marks (see electron/perfTrace.cjs); visible in DevTools too.
 performance.mark('netcatty:renderer:entry-evaluated');

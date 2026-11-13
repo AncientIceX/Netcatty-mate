@@ -369,6 +369,65 @@ export async function syncToProviderImpl(this: any,
     ) => Promise<void>;
   } = {},
 ): Promise<SyncResult> {
+    // STRICT MOBILE PULL-ONLY MODE:
+    // On mobile, any sync action strictly pulls the remote encrypted vault, decrypts it,
+    // and applies/returns it as a read-only download without ever uploading or overwriting remote cloud storage.
+    if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+      if (this.state.securityState !== 'UNLOCKED' || !this.masterPassword) {
+        return {
+          success: false,
+          provider,
+          action: 'none',
+          error: 'Vault is locked',
+        };
+      }
+      this.updateProviderStatus(provider, 'syncing');
+      this.state.lastError = null;
+      this.state.syncState = 'SYNCING';
+      this.emit({ type: 'SYNC_STARTED', provider });
+      try {
+        const remote = await this.downloadFromProvider(provider);
+        if (!remote) {
+          this.updateProviderStatus(provider, 'connected');
+          this.state.syncState = 'IDLE';
+          this.notifyStateChange();
+          return {
+            success: true,
+            provider,
+            action: 'none',
+          };
+        }
+        await this.commitRemoteInspection(provider, remote.remoteFile, remote.payload, {
+          recordDownload: true,
+        });
+        if (opts.applyConvergentPayload) {
+          await opts.applyConvergentPayload(remote.payload, async () => {});
+        }
+        this.updateProviderStatus(provider, 'connected');
+        this.state.syncState = 'IDLE';
+        this.notifyStateChange();
+        this.emit({ type: 'SYNC_COMPLETED', provider, result: { success: true, provider, action: 'download', mergedPayload: remote.payload } });
+        return {
+          success: true,
+          provider,
+          action: 'download',
+          mergedPayload: remote.payload,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.state.syncState = 'ERROR';
+        this.state.lastError = msg;
+        this.updateProviderStatus(provider, 'error', msg);
+        this.emit({ type: 'SYNC_ERROR', provider, error: msg });
+        return {
+          success: false,
+          provider,
+          action: 'none',
+          error: msg,
+        };
+      }
+    }
+
     const convergentConfig = getConvergentSyncLocalConfig();
     if (convergentConfig.initialized) {
       if (!convergentConfig.enabled) {

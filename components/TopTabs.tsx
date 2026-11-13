@@ -280,7 +280,8 @@ const TopTabsInner: React.FC<TopTabsProps> = ({
   const [hostTreeChromeReady, setHostTreeChromeReady] = useState(false);
   const [hostTreeGutterExiting, setHostTreeGutterExiting] = useState(false);
   const [rootTabsCompact, setRootTabsCompact] = useState(false);
-  const showWindowControls = !isMacClient;
+  const isMobileRuntime = typeof window !== 'undefined' && Boolean(window.__netcattyMobileMode || window.NativeBridge);
+  const showWindowControls = !isMacClient && !isMobileRuntime;
 
   // Tab reorder drag state
   const [dropIndicator, setDropIndicator] = useState<{ tabId: string; position: 'before' | 'after' } | null>(null);

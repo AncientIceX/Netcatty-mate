@@ -34,7 +34,7 @@ import {
   useSettingsChromeActions,
   useSettingsChromeStore,
 } from '../state/settingsChromeStore';
-import { getAppAppLockRuntime, useAppLockChrome } from '../state/appRuntimeBridge';
+import { getAppAppLockRuntime, getAppSettingsRuntime, useAppLockChrome } from '../state/appRuntimeBridge';
 import { useAppThemeStyle } from './useAppThemeStyle';
 import { useMainWindowInputFocusRecovery } from '../state/useMainWindowInputFocusRecovery';
 import { useExternalMcpToggleState } from '../state/useExternalMcpToggleState';
@@ -60,6 +60,7 @@ const LazyCreateWorkspaceDialog = lazy(() =>
 const LazyTextEditorTabView = lazy(() =>
   import('../../components/editor/TextEditorTabView').then((m) => ({ default: m.TextEditorTabView })),
 );
+const LazyMobileSettingsPage = lazy(() => import('../../components/SettingsPage'));
 
 // Module-level so TopTabs' memo comparator sees a stable callback.
 const focusEditorWindowTab = (id: string) => { void focusEditorInWindow(id); };
@@ -335,6 +336,34 @@ function AppViewInner({ domains }: AppViewProps) {
   const handleLockApp = useCallback(() => {
     getAppAppLockRuntime()?.lockNow('manual');
   }, []);
+
+  const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false);
+  useEffect(() => {
+    const openHandler = () => setMobileSettingsOpen(true);
+    const closeHandler = () => setMobileSettingsOpen(false);
+    window.__netcattyOpenMobileSettings = openHandler;
+    window.__netcattyCloseMobileSettings = closeHandler;
+    window.addEventListener('netcatty:mobile:open-settings', openHandler);
+    window.addEventListener('netcatty:mobile:close-settings', closeHandler);
+    return () => {
+      window.removeEventListener('netcatty:mobile:open-settings', openHandler);
+      window.removeEventListener('netcatty:mobile:close-settings', closeHandler);
+    };
+  }, []);
+
+  useEffect(() => {
+    window.__handleAndroidBack = () => {
+      if (mobileSettingsOpen) {
+        setMobileSettingsOpen(false);
+        return true;
+      }
+      if (activeTabStore.getActiveTabId() !== 'vault') {
+        activeTabStore.setActiveTabId('vault');
+        return true;
+      }
+      return false;
+    };
+  }, [mobileSettingsOpen]);
 
   const handleTerminalCommandExecuted = useCallback((
     command: string,
@@ -1119,6 +1148,18 @@ function AppViewInner({ domains }: AppViewProps) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Mobile in-app full-screen Settings overlay */}
+      {mobileSettingsOpen && getAppSettingsRuntime() && getAppAppLockRuntime() && (
+        <div className="fixed inset-0 z-[120] bg-background flex flex-col">
+          <Suspense fallback={<div className="flex-1 bg-background" />}>
+            <LazyMobileSettingsPage
+              settings={getAppSettingsRuntime()!}
+              appLock={getAppAppLockRuntime()!}
+            />
+          </Suspense>
+        </div>
+      )}
     </div>
       )}
     </UnsavedChangesProvider>

@@ -360,6 +360,9 @@ export const createSyncGist = async (
   accessToken: string,
   syncedFile: SyncedFile
 ): Promise<string> => {
+  if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+    throw new Error('手机端已锁定「只下拉同步，不上传同步」，禁止在云端新建 Gist');
+  }
   const response = await fetch(`${SYNC_CONSTANTS.GITHUB_API_BASE}/gists`, {
     method: 'POST',
     headers: {
@@ -394,6 +397,9 @@ export const updateSyncGist = async (
   gistId: string,
   syncedFile: SyncedFile
 ): Promise<void> => {
+  if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+    throw new Error('手机端已锁定「只下拉同步，不上传同步」，禁止向云端 Gist 推送覆盖数据');
+  }
   const response = await fetch(`${SYNC_CONSTANTS.GITHUB_API_BASE}/gists/${gistId}`, {
     method: 'PATCH',
     headers: {

@@ -387,6 +387,29 @@ export async function syncAllProvidersImpl(this: any,
   } = {},
 ): Promise<Map<CloudProvider, SyncResult>> {
     const results = new Map<CloudProvider, SyncResult>();
+
+    // STRICT MOBILE PULL-ONLY MODE:
+    // On mobile, syncAllProviders iterates over all connected providers and strictly pulls
+    // (downloads + decrypts) without ever uploading or modifying remote cloud vaults.
+    if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+      if (this.state.securityState !== 'UNLOCKED' || !this.masterPassword) {
+        return results;
+      }
+      const connected = Object.entries(
+        this.state.providers as Record<CloudProvider, ProviderConnection>,
+      )
+        .filter(([, connection]) => isProviderReadyForSync(connection))
+        .map(([p]) => p as CloudProvider);
+      for (const provider of connected) {
+        const res = await this.syncToProvider(provider, inputPayload, {
+          overrideShrink: opts.overrideShrink,
+          applyConvergentPayload: opts.applyConvergentPayload,
+        });
+        results.set(provider, res);
+      }
+      return results;
+    }
+
     let payload = inputPayload;
     let wasMerged = false;
 

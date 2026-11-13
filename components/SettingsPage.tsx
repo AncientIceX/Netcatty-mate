@@ -10,6 +10,7 @@ import { useAISettingsState } from "../application/state/useAISettingsState";
 import { useAvailableFonts } from "../application/state/fontStore";
 import { usePortForwardingState } from "../application/state/usePortForwardingState";
 import { useVaultState } from "../application/state/useVaultState";
+import { getAppVaultRuntime } from "../application/state/appRuntimeBridge";
 import { useWindowControls } from "../application/state/useWindowControls";
 import { useUpdateCheck } from "../application/state/useUpdateCheck";
 import { I18nProvider, useI18n } from "../application/i18n/I18nProvider";
@@ -73,7 +74,7 @@ type SettingsState = AppLockGateRenderContext["settings"];
 type AppLockState = AppLockGateRenderContext["appLock"];
 
 const settingsTabTriggerClassName =
-    "w-full justify-start gap-2 px-3 py-2 text-sm data-[state=active]:bg-background hover:bg-background/60 rounded-md transition-colors overflow-hidden";
+    "shrink-0 md:w-full justify-start gap-2 px-3 py-2 text-sm data-[state=active]:bg-background hover:bg-background/60 rounded-md transition-colors overflow-hidden";
 const settingsTabIconClassName = "shrink-0";
 const settingsTabLabelClassName = "min-w-0 truncate";
 
@@ -261,6 +262,8 @@ const SettingsAITabContainer: React.FC = () => {
 };
 
 const SettingsSyncTabWithVault: React.FC<{ onSettingsApplied?: () => void }> = ({ onSettingsApplied }) => {
+    const localVault = useVaultState({ syncConnectionLogTerminalData: false });
+    const appVault = getAppVaultRuntime();
     const {
         hosts,
         keys,
@@ -275,7 +278,7 @@ const SettingsSyncTabWithVault: React.FC<{ onSettingsApplied?: () => void }> = (
         groupConfigs,
         importDataFromString,
         clearVaultData,
-    } = useVaultState({ syncConnectionLogTerminalData: false });
+    } = appVault ?? localVault;
 
     const { rules: portForwardingRules, importRules: importPortForwardingRules } = usePortForwardingState();
 
@@ -461,11 +464,11 @@ const SettingsPageContent: React.FC<{ settings: SettingsState; appLock?: AppLock
                 value={activeTab}
                 onValueChange={handleTabChange}
                 orientation="vertical"
-                className="flex-1 flex overflow-hidden"
+                className="flex-1 flex flex-col md:flex-row overflow-hidden"
             >
-                <div className="w-56 border-r border-border flex flex-col shrink-0 px-3 py-3">
+                <div className="w-full md:w-56 border-b md:border-b-0 md:border-r border-border flex flex-col shrink-0 px-3 py-2 md:py-3">
                     <SettingsSearchControl includePlugins={pluginRuntimeAvailable} />
-                    <TabsList className="flex flex-col h-auto bg-transparent gap-1 p-0 justify-start">
+                    <TabsList className="flex flex-row md:flex-col h-auto bg-transparent gap-1 p-0 justify-start overflow-x-auto no-scrollbar">
                         <TabsTrigger
                             value="application"
                             className={settingsTabTriggerClassName}

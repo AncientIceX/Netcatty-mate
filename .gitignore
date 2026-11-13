@@ -50,6 +50,8 @@
 # traverse ignored directories, so both steps are required.
 !.github/
 !.github/**
+!android/
+!android/**
 !application/
 !application/**
 !build/

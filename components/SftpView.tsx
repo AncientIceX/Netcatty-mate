@@ -290,19 +290,27 @@ const SftpViewInner: React.FC<SftpViewProps> = ({
 
   // Subscribe to focused side for visual indicator
   const focusedSide = useSftpFocusedSide();
-  const [magnifiedSide, setMagnifiedSide] = useState<SftpFocusedSide | null>(null);
+  const [magnifiedSide, setMagnifiedSide] = useState<SftpFocusedSide | null>(() =>
+    typeof window !== 'undefined' && window.innerWidth < 768 ? 'right' : null,
+  );
   const focusedSideRef = useRef(focusedSide);
   const magnifiedSideRef = useRef(magnifiedSide);
   focusedSideRef.current = focusedSide;
   magnifiedSideRef.current = magnifiedSide;
   const [isWideSplit, setIsWideSplit] = useState(true);
+  const [isMobileNarrow, setIsMobileNarrow] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth < 768 : false,
+  );
   const [showMagnificationHint, setShowMagnificationHint] = useState(false);
   const splitSurfaceRef = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
     const surface = splitSurfaceRef.current;
     if (!surface) return undefined;
-    const update = () => setIsWideSplit(surface.clientWidth >= 1024);
+    const update = () => {
+      setIsWideSplit(surface.clientWidth >= 1024);
+      setIsMobileNarrow(surface.clientWidth < 768);
+    };
     update();
     if (typeof ResizeObserver === 'undefined') return undefined;
     const observer = new ResizeObserver(update);
@@ -610,6 +618,57 @@ const SftpViewInner: React.FC<SftpViewProps> = ({
         )}
         style={containerStyle}
       >
+        {isMobileNarrow && (
+          <div className="shrink-0 flex items-center justify-between gap-2 px-3 py-1.5 border-t border-border/60 bg-secondary/40 text-xs">
+            <div className="inline-flex items-center rounded-md bg-muted/60 p-0.5">
+              <button
+                type="button"
+                onClick={() => {
+                  handlePaneFocus('right');
+                  setMagnifiedSide('right');
+                }}
+                className={cn(
+                  "px-2.5 py-1 rounded text-xs font-medium transition-colors",
+                  magnifiedSide === 'right'
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                Remote SFTP
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handlePaneFocus('left');
+                  setMagnifiedSide('left');
+                }}
+                className={cn(
+                  "px-2.5 py-1 rounded text-xs font-medium transition-colors",
+                  magnifiedSide === 'left'
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                Local Sandbox
+              </button>
+              <button
+                type="button"
+                onClick={() => setMagnifiedSide(null)}
+                className={cn(
+                  "px-2.5 py-1 rounded text-xs font-medium transition-colors",
+                  magnifiedSide === null
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                Split
+              </button>
+            </div>
+            <span className="text-[11px] font-medium text-emerald-500">
+              只下拉模式 (Pull-Only)
+            </span>
+          </div>
+        )}
         <div
           ref={splitSurfaceRef}
           className="relative flex-1 min-h-0 border-t border-border/70 overflow-hidden"

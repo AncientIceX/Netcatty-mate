@@ -495,6 +495,26 @@ function terminalViewCtxEqual(
 
 function TerminalViewInner({ ctx, isPaneMagnified = false }: { ctx: TerminalViewContext; isPaneMagnified?: boolean }) {
   const { Activity, Button, Clock3, Copy, Maximize2, Radio, RefreshCcw, SquareArrowOutUpRight, TerminalAutocomplete, TerminalComposeBar, TerminalConnectionDialog, TerminalContextMenu, TerminalSearchBar, Tooltip, TooltipContent, TooltipTrigger, Unplug, ZmodemOverwriteDialog, ZmodemProgressIndicator, auth, autocompleteAcceptTextRef, autocompleteCloseRef, autocompleteHostOs, autocompleteInputRef, autocompleteKeyEventRef, autocompleteRepositionRef, autocompleteSettings, canUpdateHost, chainProgress, cn, compactToolbar, lineTimestampsAvailable, containerRef, effectiveFontSize, effectiveFontWeight, effectiveTerminalProtocol, effectiveTheme, error, executeSnippet, executeSnippetCommand, handleAddSelectionToAI, handleCancelConnect, handleCloseDisconnectedSession, handleCloseSearch, handleDisconnect, handleDismissDisconnectedDialog, handleDragEnter, handleDragLeave, handleDragOver, handleDrop, handleFindNext, handleFindPrevious, handleHostKeyAddAndContinue, handleHostKeyClose, handleHostKeyContinue, handleOsc52ReadResponse, handleOsc7SetupConfirm, handleOsc7SetupOpenChange, handleReceiveYmodem, handleRetry, handleSearch, handleSendYmodem, handleTopOverlayMouseDownCapture, hasMouseTracking, host, hotkeyScheme, inWorkspace, isBroadcastEnabled, composeSendToAll, onToggleComposeSendTarget, isCancelling, isComposeBarOpen, isConnectionAwaitingUserInput, isDraggingOver, isFocusMode, isFocusedPane, isLocalConnection, remoteDragDropUsesZmodem, isPluginTerminalProviderAvailable, isReconnectActive, isSerialConnection, isSearchOpen, isSupportedOs, isSystemSidebarEligible, isVisible, keyBindings, keys, identities, knownCwdRef, needsHostKeyVerification, onCloseSession, onDetach, onDetachPointerDown, onExpandToFocus, onTogglePaneMagnification, onOpenSystem, onRename, onSplitHorizontal, onSplitVertical, onToggleBroadcast, onUpdateHost, osc52ReadPromptVisible, osc7SetupOpen, osc7SetupRunning, passwordPromptActiveRef, pendingHostKeyInfo, progressLogs, progressValue, renderControls, resolvedFontFamily, restoreState, scriptExecutionOverlay, searchMatchCount, searchFocusToken, sessionDisplayName, sessionId, workspaceId, sessionRef, setIsComposeBarOpen, setShowLogs, shouldShowConnectionDialog, showDisconnectedTerminalNotice, showConnectionControls, showLogs, showSelectionAIAction, isRestoringSelectionRef, snippets, status, sudoHintRef, sudoHintText, passwordPickerState, onPasswordPickerSelect, passwordPickerTitle, passwordPickerEmptyText, t, termRef, terminalContextActions, terminalCwdTracker, terminalPreviewVars, terminalSettings, terminalReconnectAvailable, reconnectNoticeMessage, connectionDeadlineAt, connectionTimeoutSeconds, toast, zmodem } = ctx;
+  const isMobileTouch = typeof window !== 'undefined' && Boolean(window.__netcattyMobileMode || window.NativeBridge || window.innerWidth < 768);
+  const [ctrlArmed, setCtrlArmed] = useState(false);
+  const [altArmed, setAltArmed] = useState(false);
+  const sendMobileKey = useCallback((seq: string) => {
+    window.NativeBridge?.vibrateShort?.();
+    let out = seq;
+    if (ctrlArmed && seq.length === 1) {
+      const code = seq.toUpperCase().charCodeAt(0);
+      if (code >= 64 && code <= 95) {
+        out = String.fromCharCode(code - 64);
+      }
+      setCtrlArmed(false);
+    }
+    if (altArmed) {
+      out = `\x1b${out}`;
+      setAltArmed(false);
+    }
+    window.netcatty?.writeToSession?.(sessionId, out);
+    termRef.current?.focus();
+  }, [altArmed, ctrlArmed, sessionId, termRef]);
   // Context menu only needs a snapshot at open; avoid selection state lifting into Terminal.
   const [contextMenuHasSelection, setContextMenuHasSelection] = useState(false);
   const isNetworkDevice = host.deviceType === 'network'
@@ -1479,6 +1499,77 @@ function TerminalViewInner({ ctx, isPaneMagnified = false }: { ctx: TerminalView
             onToggleComposeSendTarget={onToggleComposeSendTarget}
             themeColors={effectiveTheme.colors}
           />
+        )}
+
+        {/* Mobile Touch Keybar for SSH / Shell */}
+        {isMobileTouch && status === 'connected' && (
+          <div
+            className="shrink-0 flex items-center gap-1 px-2 py-1.5 overflow-x-auto no-scrollbar border-t border-white/10 select-none"
+            style={{ backgroundColor: effectiveTheme.colors.background }}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            {[
+              { label: 'ESC', seq: '\x1b' },
+              { label: 'TAB', seq: '\t' },
+              { label: 'CTRL', toggle: 'ctrl' as const },
+              { label: 'ALT', toggle: 'alt' as const },
+              { label: '↑', seq: '\x1b[A' },
+              { label: '↓', seq: '\x1b[B' },
+              { label: '←', seq: '\x1b[D' },
+              { label: '→', seq: '\x1b[C' },
+              { label: 'HOME', seq: '\x1b[H' },
+              { label: 'END', seq: '\x1b[F' },
+              { label: 'PGUP', seq: '\x1b[5~' },
+              { label: 'PGDN', seq: '\x1b[6~' },
+              { label: 'CTRL+C', seq: '\x03' },
+              { label: 'CTRL+D', seq: '\x04' },
+              { label: 'CTRL+Z', seq: '\x1a' },
+              { label: 'CTRL+L', seq: '\x0c' },
+              { label: '/', seq: '/' },
+              { label: '-', seq: '-' },
+              { label: '|', seq: '|' },
+              { label: '~', seq: '~' },
+            ].map((k) => {
+              const isActive =
+                (k.toggle === 'ctrl' && ctrlArmed) || (k.toggle === 'alt' && altArmed);
+              return (
+                <button
+                  key={k.label}
+                  type="button"
+                  onClick={() => {
+                    if (k.toggle === 'ctrl') {
+                      window.NativeBridge?.vibrateShort?.();
+                      setCtrlArmed((v) => !v);
+                      termRef.current?.focus();
+                      return;
+                    }
+                    if (k.toggle === 'alt') {
+                      window.NativeBridge?.vibrateShort?.();
+                      setAltArmed((v) => !v);
+                      termRef.current?.focus();
+                      return;
+                    }
+                    if (k.seq) sendMobileKey(k.seq);
+                  }}
+                  className={cn(
+                    "shrink-0 px-2.5 h-7 rounded text-[11px] font-mono font-medium border transition-colors",
+                    isActive
+                      ? "bg-primary text-primary-foreground border-primary"
+                      : "bg-white/10 text-white/90 border-white/15 active:bg-white/25",
+                  )}
+                >
+                  {k.label}
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              onClick={() => setIsComposeBarOpen(!isComposeBarOpen)}
+              className="shrink-0 px-2.5 h-7 rounded text-[11px] font-mono font-medium border bg-white/10 text-white/90 border-white/15 active:bg-white/25"
+            >
+              CMD
+            </button>
+          </div>
         )}
       </div>
     </TerminalContextMenu>
