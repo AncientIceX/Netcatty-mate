@@ -114,17 +114,17 @@ jobs:
             --ks-key-alias netcattykey \
             --ks-pass pass:netcatty123 \
             --key-pass pass:netcatty123 \
-            --out dist_apk/Netcatty-Mate-v3.0.0-Android.apk \
+            --out dist_apk/Netcatty-Mate-v3.0.1-Android.apk \
             build_apk/aligned.apk
 
-          ls -lh dist_apk/Netcatty-Mate-v3.0.0-Android.apk
+          ls -lh dist_apk/Netcatty-Mate-v3.0.1-Android.apk
 
-      - name: Publish GitHub Release v3.0.0
+      - name: Publish GitHub Release v3.0.1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="v3.0.0"
+          TAG="v3.0.1"
           gh release delete "$TAG" --yes || true
-          gh release create "$TAG" dist_apk/Netcatty-Mate-v3.0.0-Android.apk \
-            --title "Netcatty Mate v3.0.0 (原版 Netcatty UI 移动版 + JSch SSHv2/SFTP 完整客户端)" \
-            --notes "直接基于开源原版 Netcatty (React 19 + TypeScript + Tailwind CSS + Radix UI + xterm.js 5.5.0) 源码深度适配打造的原汁原味手机版，底层搭载原生 Android JSch 0.2.21 + BouncyCastle 1.79 引擎：完整保留原版 Vaults 主机墙/列表/树状视图、官方发行版图标、密钥链管理、Snippets 代码片段、端口转发、Known Hosts、实时 Server Monitor、右侧/底部 System Manager（进程/Docker/监听端口/Systemd 服务）以及 10+ 套原版暗黑/亮色主题；针对手机触屏优化了应用内全屏设置面板、全宽抽屉详情栏、SFTP 单双栏切换与终端底部虚拟扩展按键栏；严格锁定「只下拉同步，不上传同步」（云同步仅从云端只读拉取合并，SFTP 仅允许从远端服务器下载至本地沙盒）。"
+          gh release create "$TAG" dist_apk/Netcatty-Mate-v3.0.1-Android.apk \
+            --title "Netcatty Mate v3.0.1 (修复启动黑屏 + 原版 Netcatty UI 移动版)" \
+            --notes "修复 v3.0.0 启动黑屏问题：1) 修复 AppLockGate 因 getAppLockRuntimeState 缺少 initialized:true 导致 shouldRenderAppLockGateChildren 返回 false 並在移除 Splash 后只渲染空节点的问题；2) 修复 usePluginThemeRuntime 中 getPluginThemes 返回结构与 ThemePackCatalog (selection.revision) 不一致导致的启动异常；3) 补全所有桌面 IPC 状态探测与监听器的安全桥接返回。"

@@ -249,6 +249,33 @@
       </div>
     </div>
   </div>
+  <script>
+    (function () {
+      function showBootDiagnostic(title, detail) {
+        var box = document.getElementById('nc-mobile-boot-diag');
+        if (!box) {
+          box = document.createElement('div');
+          box.id = 'nc-mobile-boot-diag';
+          box.style.cssText = 'position:fixed;left:12px;right:12px;bottom:16px;z-index:2147483647;background:rgba(15,23,42,0.96);color:#f8fafc;border:1px solid #ef4444;border-radius:10px;padding:12px;font-family:monospace;font-size:12px;max-height:55vh;overflow:auto;box-shadow:0 10px 30px rgba(0,0,0,0.5);';
+          document.body.appendChild(box);
+        }
+        var item = document.createElement('div');
+        item.style.marginBottom = '8px';
+        item.innerHTML = '<strong style="color:#f87171;">[' + title + ']</strong><div style="white-space:pre-wrap;word-break:break-word;margin-top:4px;color:#e2e8f0;">' + String(detail || '') + '</div>';
+        box.appendChild(item);
+      }
+      window.addEventListener('error', function (ev) {
+        var msg = (ev && (ev.error && ev.error.stack || ev.message)) || String(ev);
+        if (/ResizeObserver loop/i.test(msg)) return;
+        showBootDiagnostic('Runtime Error', msg);
+      });
+      window.addEventListener('unhandledrejection', function (ev) {
+        var reason = ev && ev.reason;
+        var msg = (reason && (reason.stack || reason.message)) || String(reason);
+        showBootDiagnostic('Unhandled Promise', msg);
+      });
+    })();
+  </script>
   <script type="module" src="/index.tsx"></script>
 </body>
 
