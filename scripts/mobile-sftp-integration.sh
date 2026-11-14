@@ -16,8 +16,8 @@ ssh-keygen -q -t ed25519 -N '' -f "$ROOT/client"
 cp "$ROOT/client.pub" "$ROOT/authorized_keys"
 mkdir "$ROOT/files" "$ROOT/classes"
 printf 'foreign original' > "$ROOT/files/foreign-owner"
-sudo chown 65534:65534 "$ROOT/files/foreign-owner"
 chmod 644 "$ROOT/files/foreign-owner"
+sudo chown 65534:65534 "$ROOT/files/foreign-owner"
 PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
 printf 'Port %s\nListenAddress 127.0.0.1\nHostKey %s/host\nPidFile %s/sshd.pid\nAuthorizedKeysFile %s/authorized_keys\nStrictModes no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nAllowUsers %s\nSubsystem sftp internal-sftp\n' "$PORT" "$ROOT" "$ROOT" "$ROOT" "$(id -un)" > "$ROOT/sshd_config"
 sudo mkdir -p /run/sshd

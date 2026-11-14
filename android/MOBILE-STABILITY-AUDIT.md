@@ -77,4 +77,3 @@ extension is claimed. A disconnected server can retain an uncommitted staging fi
 Servers without atomic overwrite-rename support fail without deleting the original.
 Dangling symlinks fail rather than replacing the symlink. Android device/UI and
 non-OpenSSH servers still require testing. No tag/Release is created.
-
