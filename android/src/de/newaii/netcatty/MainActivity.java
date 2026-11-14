@@ -6,9 +6,11 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.VibrationEffect;
@@ -18,6 +20,7 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.webkit.ConsoleMessage;
 import android.webkit.JavascriptInterface;
@@ -29,12 +32,16 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
+import android.widget.Toast;
 
+import com.jcraft.jsch.ChannelDirectTCPIP;
 import com.jcraft.jsch.ChannelExec;
 import com.jcraft.jsch.ChannelSftp;
 import com.jcraft.jsch.ChannelShell;
 import com.jcraft.jsch.JSch;
 import com.jcraft.jsch.KeyPair;
+import com.jcraft.jsch.ProxyHTTP;
+import com.jcraft.jsch.ProxySOCKS5;
 import com.jcraft.jsch.SftpATTRS;
 import com.jcraft.jsch.SftpProgressMonitor;
 import com.jcraft.jsch.Session;
@@ -46,7 +53,9 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -56,26 +65,39 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.security.Security;
 import java.security.cert.X509Certificate;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
+import java.util.TimeZone;
 import java.util.Vector;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSession;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
+
+import android.database.Cursor;
+import android.provider.OpenableColumns;
 
 /**
  * Netcatty Mate Mobile - Native Android Host & SSHv2 / SFTP / PortForward Engine
@@ -88,6 +110,11 @@ public class MainActivity extends Activity {
         try {
             Security.removeProvider("BC");
             Security.insertProviderAt(new BouncyCastleProvider(), 1);
+            // Force mwiede/jsch on Android (JavaVersion=8) to use BouncyCastle for X25519/X448 & Ed25519/Ed448!
+            JSch.setConfig("xdh", "com.jcraft.jsch.bc.XDH");
+            JSch.setConfig("keypairgen.eddsa", "com.jcraft.jsch.bc.KeyPairGenEdDSA");
+            JSch.setConfig("ssh-ed25519", "com.jcraft.jsch.bc.SignatureEd25519");
+            JSch.setConfig("ssh-ed448", "com.jcraft.jsch.bc.SignatureEd448");
         } catch (Throwable ignored) {
         }
     }
@@ -130,12 +157,15 @@ public class MainActivity extends Activity {
         String ruleId;
         Session session;
         List<Session> jumpSessions = new ArrayList<>();
+        ServerSocket dynamicServer;
         String type;
         String bindAddress;
         int localPort;
         String remoteHost;
         int remotePort;
         String status = "active";
+        String error;
+        AtomicInteger activeConnections = new AtomicInteger(0);
     }
 
     private final ConcurrentHashMap<String, SshContext> sshSessions = new ConcurrentHashMap<>();
@@ -145,6 +175,10 @@ public class MainActivity extends Activity {
     private final ConcurrentHashMap<String, PortForwardContext> activeForwards = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Boolean> cancelledTransfers = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, HttpURLConnection> activeAiStreams = new ConcurrentHashMap<>();
+
+    private static final int REQ_IMPORT_FILE = 9001;
+    private volatile String pendingImportCallbackId = null;
+    private long lastBackPressTime = 0L;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -162,9 +196,12 @@ public class MainActivity extends Activity {
                 lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
                 window.setAttributes(lp);
             }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                window.setDecorFitsSystemWindows(false);
+            }
         }
 
-        FrameLayout root = new FrameLayout(this);
+        final FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.parseColor("#090d16"));
 
         webView = new WebView(this);
@@ -174,10 +211,128 @@ public class MainActivity extends Activity {
         root.addView(webView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
+
+        root.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+            @Override
+            public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
+                int top = 0;
+                int bottom = 0;
+                int left = 0;
+                int right = 0;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    Insets sysBars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                    Insets ime = insets.getInsets(WindowInsets.Type.ime());
+                    top = sysBars.top;
+                    left = sysBars.left;
+                    right = sysBars.right;
+                    bottom = Math.max(sysBars.bottom, ime.bottom);
+                } else {
+                    top = insets.getSystemWindowInsetTop();
+                    left = insets.getSystemWindowInsetLeft();
+                    right = insets.getSystemWindowInsetRight();
+                    bottom = insets.getSystemWindowInsetBottom();
+                }
+                v.setPadding(left, top, right, bottom);
+                return insets;
+            }
+        });
+
         setContentView(root);
 
         seedDefaultSandboxFiles();
         webView.loadUrl("https://appassets.netcatty.local/index.html");
+    }
+
+    @Override
+    @SuppressWarnings("deprecation")
+    public void onBackPressed() {
+        if (webView != null) {
+            webView.evaluateJavascript(
+                    "(function(){ try { return window.__netcattyHandleBackPress ? Boolean(window.__netcattyHandleBackPress()) : false; } catch(e) { return false; } })()",
+                    new ValueCallback<String>() {
+                        @Override
+                        public void onReceiveValue(String value) {
+                            if ("true".equals(value)) {
+                                return;
+                            }
+                            long now = System.currentTimeMillis();
+                            if (now - lastBackPressTime < 2000L) {
+                                moveTaskToBack(true);
+                            } else {
+                                lastBackPressTime = now;
+                                Toast.makeText(MainActivity.this, "再按一次退至后台（保持 SSH 连接不断开）", Toast.LENGTH_SHORT).show();
+                            }
+                        }
+                    });
+        } else {
+            super.onBackPressed();
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQ_IMPORT_FILE) {
+            final String cbId = pendingImportCallbackId;
+            pendingImportCallbackId = null;
+            if (cbId == null) return;
+            if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+                try {
+                    JSONObject ev = new JSONObject();
+                    ev.put("callbackId", cbId);
+                    ev.put("canceled", true);
+                    emitToJs("dialog:open-file-result", ev);
+                } catch (Exception ignored) {}
+                return;
+            }
+            final Uri uri = data.getData();
+            ioPool.execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        String fileName = "imported_file";
+                        try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
+                            if (cursor != null && cursor.moveToFirst()) {
+                                int nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                                if (nameIdx >= 0) {
+                                    String n = cursor.getString(nameIdx);
+                                    if (n != null && !n.trim().isEmpty()) fileName = n.trim();
+                                }
+                            }
+                        } catch (Exception ignored) {}
+                        File importDir = new File(getFilesDir(), "Imports");
+                        if (!importDir.exists()) importDir.mkdirs();
+                        String safeName = fileName.replaceAll("[\\\\/:*?\"<>|]", "_");
+                        File destFile = new File(importDir, safeName);
+                        try (InputStream is = getContentResolver().openInputStream(uri);
+                             FileOutputStream fos = new FileOutputStream(destFile, false)) {
+                            if (is != null) {
+                                byte[] buf = new byte[16384];
+                                int n;
+                                while ((n = is.read(buf)) > 0) {
+                                    fos.write(buf, 0, n);
+                                }
+                            }
+                            fos.flush();
+                        }
+                        JSONObject ev = new JSONObject();
+                        ev.put("callbackId", cbId);
+                        ev.put("canceled", false);
+                        ev.put("filePath", destFile.getAbsolutePath());
+                        ev.put("fileName", safeName);
+                        emitToJs("dialog:open-file-result", ev);
+                    } catch (Exception e) {
+                        try {
+                            JSONObject ev = new JSONObject();
+                            ev.put("callbackId", cbId);
+                            ev.put("canceled", true);
+                            ev.put("error", e.getMessage() != null ? e.getMessage() : e.toString());
+                            emitToJs("dialog:open-file-result", ev);
+                        } catch (Exception ignored) {}
+                    }
+                }
+            });
+        }
     }
 
     private String guessMimeType(String path) {
@@ -218,7 +373,7 @@ public class MainActivity extends Activity {
                                 "Netcatty Mate Mobile (Android Native JSch + BouncyCastle Edition)\n"
                                 + "==================================================================\n"
                                 + "- Full SSHv2 PTY Terminal (xterm.js 5.5.0)\n"
-                                + "- SFTP Pull-Only Mode: Remote files downloaded here are stored safely.\n"
+                                + "- SFTP: Browse, download, upload and manage remote files.\n"
                                 + "- Cloud Sync Pull-Only Mode: Vault synchronization is strictly read-only pull.\n");
                     }
                 } catch (Exception ignored) {
@@ -280,13 +435,33 @@ public class MainActivity extends Activity {
                     try {
                         InputStream is = getAssets().open(assetPath);
                         String mime = guessMimeType(assetPath);
-                        WebResourceResponse resp = new WebResourceResponse(mime, "UTF-8", is);
+                        String encoding = (mime.startsWith("text/") || "application/javascript".equals(mime) || "application/json".equals(mime) || "image/svg+xml".equals(mime))
+                                ? "UTF-8" : null;
+                        WebResourceResponse resp = new WebResourceResponse(mime, encoding, is);
                         Map<String, String> headers = new ConcurrentHashMap<>();
                         headers.put("Access-Control-Allow-Origin", "*");
                         headers.put("Cache-Control", "no-cache");
                         resp.setResponseHeaders(headers);
                         return resp;
                     } catch (Exception ignored) {
+                        Map<String, String> headers = new ConcurrentHashMap<>();
+                        headers.put("Access-Control-Allow-Origin", "*");
+                        if (!path.contains(".")) {
+                            try {
+                                InputStream indexStream = getAssets().open("www/index.html");
+                                WebResourceResponse spaResp = new WebResourceResponse("text/html", "UTF-8", indexStream);
+                                spaResp.setResponseHeaders(headers);
+                                return spaResp;
+                            } catch (Exception ignoredSpa) {
+                            }
+                        }
+                        return new WebResourceResponse(
+                                "text/plain",
+                                "UTF-8",
+                                404,
+                                "Not Found",
+                                headers,
+                                new ByteArrayInputStream(new byte[0]));
                     }
                 }
                 return super.shouldInterceptRequest(view, request);
@@ -399,10 +574,244 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void deleteSftpEntryRecursive(ChannelSftp sftp, String remotePath) throws Exception {
+        String path = sftp.realpath(remotePath);
+        if ("/".equals(path) || remotePath == null || remotePath.trim().isEmpty()) throw new IllegalArgumentException("Refusing to delete root");
+        deleteSftpEntryChecked(sftp, remotePath, 0);
+    }
+
+    private void deleteSftpEntryChecked(ChannelSftp sftp, String path, int depth) throws Exception {
+        if (depth > 128) throw new java.io.IOException("Directory nesting too deep");
+        SftpATTRS attrs = sftp.lstat(path);
+        if (attrs.isDir() && !attrs.isLink()) {
+            @SuppressWarnings("unchecked")
+            Vector<ChannelSftp.LsEntry> entries = sftp.ls(path);
+            for (ChannelSftp.LsEntry entry : entries) {
+                String name = entry.getFilename();
+                if (".".equals(name) || "..".equals(name)) continue;
+                if (name.indexOf('/') >= 0) throw new java.io.IOException("Invalid directory entry");
+                deleteSftpEntryChecked(sftp, path + "/" + name, depth + 1);
+            }
+            sftp.rmdir(path);
+        } else {
+            sftp.rm(path);
+        }
+    }
+
+    private File resolveLocalFile(String rawPath) {
+        if (rawPath == null || rawPath.trim().isEmpty() || "~".equals(rawPath.trim()) || ".".equals(rawPath.trim())) {
+            return getFilesDir();
+        }
+        String p = rawPath.trim();
+        if (p.startsWith("~/")) {
+            return new File(getFilesDir(), p.substring(2));
+        }
+        return new File(p);
+    }
+
+    private static byte[] readAllBytes(InputStream is) throws Exception {
+        if (is == null) return new byte[0];
+        try (InputStream in = is; ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) != -1) {
+                baos.write(buf, 0, n);
+            }
+            return baos.toByteArray();
+        }
+    }
+
+    private void emitPortForwardRuntimeSnapshot() {
+        try {
+            JSONArray arr = new JSONArray();
+            for (PortForwardContext pfc : activeForwards.values()) {
+                JSONObject item = new JSONObject();
+                item.put("tunnelId", pfc.tunnelId);
+                item.put("ruleId", pfc.ruleId);
+                item.put("type", pfc.type);
+                item.put("localPort", pfc.localPort);
+                item.put("bindAddress", pfc.bindAddress);
+                item.put("remoteHost", pfc.remoteHost);
+                item.put("remotePort", pfc.remotePort);
+                item.put("status", pfc.status);
+                item.put("activeConnections", pfc.activeConnections.get());
+                if (pfc.error != null && !pfc.error.isEmpty()) {
+                    item.put("error", pfc.error);
+                }
+                arr.put(item);
+            }
+            JSONObject payload = new JSONObject();
+            payload.put("tunnels", arr);
+            emitToJs("port_forward_runtime", payload);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void startDynamicSocks5Server(final PortForwardContext pfc) throws Exception {
+        InetAddress bindInet = (pfc.bindAddress == null || pfc.bindAddress.isEmpty() || "0.0.0.0".equals(pfc.bindAddress))
+                ? InetAddress.getByName("0.0.0.0")
+                : InetAddress.getByName(pfc.bindAddress);
+        final ServerSocket server = new ServerSocket(pfc.localPort, 64, bindInet);
+        pfc.dynamicServer = server;
+        if (pfc.localPort == 0) {
+            pfc.localPort = server.getLocalPort();
+        }
+        ioPool.execute(new Runnable() {
+            @Override
+            public void run() {
+                while (!server.isClosed() && pfc.session != null && pfc.session.isConnected()) {
+                    try {
+                        final Socket client = server.accept();
+                        client.setTcpNoDelay(true);
+                        try { ioPool.execute(new Runnable() {
+                            @Override
+                            public void run() {
+                                handleSocks5Client(pfc, client);
+                            }
+                        }); } catch (RuntimeException rejected) {
+                            try { client.close(); } catch (Exception ignored) {}
+                            throw rejected;
+                        }
+                    } catch (Exception acceptErr) {
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    private void handleSocks5Client(final PortForwardContext pfc, final Socket client) {
+        ChannelDirectTCPIP channel = null;
+        boolean negotiated = false;
+        boolean connected = false;
+        pfc.activeConnections.incrementAndGet();
+        emitPortForwardRuntimeSnapshot();
+        try {
+            client.setSoTimeout(15000);
+            DataInputStream dis = new DataInputStream(client.getInputStream());
+            OutputStream cos = client.getOutputStream();
+
+            int ver = dis.readUnsignedByte();
+            if (ver != 0x05) {
+                client.close();
+                return;
+            }
+            int nMethods = dis.readUnsignedByte();
+            byte[] methods = new byte[nMethods];
+            dis.readFully(methods);
+            boolean supportsNoAuth = false;
+            for (byte offered : methods) if (offered == 0) supportsNoAuth = true;
+            if (!supportsNoAuth) {
+                cos.write(new byte[]{0x05, (byte) 0xff});
+                cos.flush();
+                return;
+            }
+            cos.write(new byte[]{0x05, 0x00});
+            cos.flush();
+
+            negotiated = true;
+            int reqVer = dis.readUnsignedByte();
+            int cmd = dis.readUnsignedByte();
+            int reserved = dis.readUnsignedByte();
+            int atyp = dis.readUnsignedByte();
+            if (reqVer != 0x05 || reserved != 0 || cmd != 0x01) {
+                cos.write(new byte[]{0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0});
+                cos.flush();
+                client.close();
+                return;
+            }
+
+            String targetHost;
+            if (atyp == 0x01) {
+                byte[] ip4 = new byte[4];
+                dis.readFully(ip4);
+                targetHost = InetAddress.getByAddress(ip4).getHostAddress();
+            } else if (atyp == 0x03) {
+                int domainLen = dis.readUnsignedByte();
+                if (domainLen == 0) throw new java.io.IOException("Empty SOCKS hostname");
+                byte[] domainBytes = new byte[domainLen];
+                dis.readFully(domainBytes);
+                targetHost = new String(domainBytes, StandardCharsets.US_ASCII);
+                if (!targetHost.matches("[A-Za-z0-9._-]+")) throw new java.io.IOException("Invalid SOCKS hostname");
+            } else if (atyp == 0x04) {
+                byte[] ip6 = new byte[16];
+                dis.readFully(ip6);
+                targetHost = InetAddress.getByAddress(ip6).getHostAddress();
+            } else {
+                cos.write(new byte[]{0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0});
+                cos.flush();
+                client.close();
+                return;
+            }
+            int targetPort = dis.readUnsignedShort();
+            if (targetPort == 0) throw new java.io.IOException("Invalid SOCKS port");
+
+            channel = (ChannelDirectTCPIP) pfc.session.openChannel("direct-tcpip");
+            channel.setHost(targetHost);
+            channel.setPort(targetPort);
+            if (client.getInetAddress() != null) {
+                channel.setOrgIPAddress(client.getInetAddress().getHostAddress());
+            }
+            channel.setOrgPort(client.getPort());
+            final InputStream remoteIn = channel.getInputStream();
+            final OutputStream remoteOut = channel.getOutputStream();
+            channel.connect(15000);
+            client.setSoTimeout(0);
+
+            // SOCKS5 success reply
+            cos.write(new byte[]{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0});
+            cos.flush();
+
+            connected = true;
+            final ChannelDirectTCPIP finalChannel = channel;
+            ioPool.execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        byte[] buf = new byte[16384];
+                        int n;
+                        while ((n = remoteIn.read(buf)) != -1) {
+                            cos.write(buf, 0, n);
+                            cos.flush();
+                        }
+                    } catch (Exception ignored) {
+                    } finally {
+                        try { client.close(); } catch (Exception ignored) {}
+                        try { finalChannel.disconnect(); } catch (Exception ignored) {}
+                    }
+                }
+            });
+
+            byte[] buf = new byte[16384];
+            int n;
+            while ((n = dis.read(buf)) != -1) {
+                remoteOut.write(buf, 0, n);
+                remoteOut.flush();
+            }
+        } catch (Exception ignored) {
+            if (negotiated && !connected) {
+                try {
+                    client.getOutputStream().write(new byte[]{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0});
+                    client.getOutputStream().flush();
+                } catch (Exception replyError) {}
+            }
+        } finally {
+            try { if (channel != null) channel.disconnect(); } catch (Exception ignored) {}
+            try { client.close(); } catch (Exception ignored) {}
+            pfc.activeConnections.decrementAndGet();
+            emitPortForwardRuntimeSnapshot();
+        }
+    }
+
     private void stopPortForwardInternal(String tunnelId) {
         if (tunnelId == null || tunnelId.isEmpty()) return;
         PortForwardContext pfc = activeForwards.remove(tunnelId);
         if (pfc != null) {
+            try {
+                if (pfc.dynamicServer != null && !pfc.dynamicServer.isClosed()) {
+                    pfc.dynamicServer.close();
+                }
+            } catch (Exception ignored) {}
             try {
                 if (pfc.session != null && pfc.session.isConnected()) {
                     if ("local".equalsIgnoreCase(pfc.type)) {
@@ -421,13 +830,84 @@ public class MainActivity extends Activity {
         }
     }
 
+    private static byte[] decodeBase32(String input) {
+        if (input == null) return new byte[0];
+        String clean = input.trim().toUpperCase(Locale.US).replaceAll("[\\s=\\-]", "");
+        if (clean.isEmpty()) return new byte[0];
+        String alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        int buffer = 0;
+        int bitsLeft = 0;
+        for (int i = 0; i < clean.length(); i++) {
+            int val = alphabet.indexOf(clean.charAt(i));
+            if (val < 0) throw new IllegalArgumentException("Invalid Base32 secret");
+            buffer = (buffer << 5) | val;
+            bitsLeft += 5;
+            if (bitsLeft >= 8) {
+                bitsLeft -= 8;
+                baos.write((buffer >> bitsLeft) & 0xFF);
+            }
+        }
+        return baos.toByteArray();
+    }
+
+    private static String computeTotpCodeFromUriOrSecret(String uriOrSecret) {
+        if (uriOrSecret == null || uriOrSecret.trim().isEmpty()) return "";
+        String secret = uriOrSecret.trim();
+        String algorithm = "HmacSHA1";
+        int digits = 6;
+        int period = 30;
+        try {
+            if (secret.toLowerCase(Locale.US).startsWith("otpauth://")) {
+                Uri u = Uri.parse(secret);
+                if (!"totp".equalsIgnoreCase(u.getHost())) return "";
+                String s = u.getQueryParameter("secret");
+                if (s == null || s.isEmpty()) return "";
+                secret = s;
+                String alg = u.getQueryParameter("algorithm");
+                if ("SHA256".equalsIgnoreCase(alg)) algorithm = "HmacSHA256";
+                else if ("SHA512".equalsIgnoreCase(alg)) algorithm = "HmacSHA512";
+                else if (alg != null && !"SHA1".equalsIgnoreCase(alg)) return "";
+                String d = u.getQueryParameter("digits");
+                if (d != null) digits = Integer.parseInt(d);
+                String p = u.getQueryParameter("period");
+                if (p != null) period = Integer.parseInt(p);
+            }
+            if ((digits != 6 && digits != 8) || period <= 0) return "";
+            byte[] keyBytes = decodeBase32(secret);
+            if (keyBytes.length == 0) return "";
+            long counter = (System.currentTimeMillis() / 1000L) / Math.max(1, period);
+            byte[] data = new byte[8];
+            for (int i = 7; i >= 0; i--) {
+                data[i] = (byte) (counter & 0xFF);
+                counter >>= 8;
+            }
+            Mac mac = Mac.getInstance(algorithm);
+            mac.init(new SecretKeySpec(keyBytes, algorithm));
+            byte[] hash = mac.doFinal(data);
+            int offset = hash[hash.length - 1] & 0x0F;
+            int binary = ((hash[offset] & 0x7F) << 24)
+                    | ((hash[offset + 1] & 0xFF) << 16)
+                    | ((hash[offset + 2] & 0xFF) << 8)
+                    | (hash[offset + 3] & 0xFF);
+            int mod = 1;
+            for (int i = 0; i < digits; i++) mod *= 10;
+            int otp = binary % mod;
+            return String.format(Locale.US, "%0" + digits + "d", otp);
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
     private static class SshUserInfo implements UserInfo, UIKeyboardInteractive {
         private final String password;
         private final String passphrase;
+        private final String totpSecret;
 
-        SshUserInfo(String password, String passphrase) {
+        SshUserInfo(String password, String passphrase, String totpSecret) {
             this.password = password != null ? password : "";
             this.passphrase = passphrase != null ? passphrase : "";
+            this.totpSecret = totpSecret != null ? totpSecret : "";
         }
 
         @Override
@@ -452,7 +932,7 @@ public class MainActivity extends Activity {
 
         @Override
         public boolean promptYesNo(String message) {
-            return true;
+            return false;
         }
 
         @Override
@@ -464,7 +944,21 @@ public class MainActivity extends Activity {
             if (prompt == null || prompt.length == 0) return new String[0];
             String[] responses = new String[prompt.length];
             for (int i = 0; i < prompt.length; i++) {
-                responses[i] = password;
+                String p = prompt[i] != null ? prompt[i].toLowerCase(Locale.US) : "";
+                boolean isOtpPrompt = p.contains("verification") || p.contains("authenticator")
+                        || p.contains("totp") || p.contains("otp") || p.contains("token")
+                        || p.contains("2fa") || p.contains("two-factor") || p.contains("code")
+                        || p.contains("验证码") || p.contains("动态码");
+                if (echo != null && i < echo.length && echo[i]) return null;
+                if (isOtpPrompt) {
+                    String code = computeTotpCodeFromUriOrSecret(totpSecret);
+                    if (code.isEmpty()) return null;
+                    responses[i] = code;
+                } else if (p.contains("password") || p.contains("密码")) {
+                    responses[i] = password;
+                } else {
+                    return null;
+                }
             }
             return responses;
         }
@@ -474,20 +968,32 @@ public class MainActivity extends Activity {
         String hostname = (overrideHost != null && !overrideHost.isEmpty())
                 ? overrideHost
                 : cfg.optString("hostname", "").trim();
-        int port = (overridePort > 0) ? overridePort : cfg.optInt("port", 22);
+        if (hostname.isEmpty()) {
+            hostname = cfg.optString("host", cfg.optString("sshHost", "")).trim();
+        }
+        int port = (overridePort > 0) ? overridePort : cfg.optInt("port", cfg.optInt("sshPort", 22));
         String username = cfg.optString("username", "root").trim();
         if (username.isEmpty()) username = "root";
         String password = cfg.optString("password", "");
         String privateKey = cfg.optString("privateKey", "").trim();
+        String privateKeyPath = cfg.optString("privateKeyPath", "").trim();
         String certificate = cfg.optString("certificate", "").trim();
         String passphrase = cfg.optString("passphrase", "");
-        boolean legacyAlgorithms = cfg.optBoolean("legacyAlgorithms", true);
+        String totpSecret = cfg.optString("totpUri", cfg.optString("totpSecret", "")).trim();
+        boolean legacyAlgorithms = cfg.optBoolean("legacyAlgorithms", false);
 
         if (hostname.isEmpty()) {
             throw new IllegalArgumentException("SSH hostname is empty");
         }
 
         JSch jsch = new JSch();
+        if (privateKey.isEmpty() && !privateKeyPath.isEmpty()) {
+            File kf = resolveLocalFile(privateKeyPath);
+            if (kf.exists() && kf.isFile()) {
+                byte[] kb = readAllBytes(new FileInputStream(kf));
+                privateKey = new String(kb, StandardCharsets.UTF_8).trim();
+            }
+        }
         if (!privateKey.isEmpty()) {
             String normalizedKey = privateKey.replace("\r\n", "\n").trim() + "\n";
             byte[] prvBytes = normalizedKey.getBytes(StandardCharsets.UTF_8);
@@ -502,10 +1008,52 @@ public class MainActivity extends Activity {
         if (!password.isEmpty()) {
             session.setPassword(password);
         }
-        session.setUserInfo(new SshUserInfo(password, passphrase));
+        session.setUserInfo(new SshUserInfo(password, passphrase, totpSecret));
+
+        // Optional HTTP / SOCKS5 proxy support
+        JSONObject proxyCfg = cfg.optJSONObject("proxyConfig");
+        if (proxyCfg == null) proxyCfg = cfg.optJSONObject("proxy");
+        if (proxyCfg != null && overrideHost == null) {
+            String pType = proxyCfg.optString("type", "").toLowerCase(Locale.US);
+            String pHost = proxyCfg.optString("host", proxyCfg.optString("hostname", "")).trim();
+            int pPort = proxyCfg.optInt("port", 0);
+            String pUser = proxyCfg.optString("username", "").trim();
+            String pPass = proxyCfg.optString("password", "");
+            if (!pHost.isEmpty() && pPort > 0) {
+                if ("http".equals(pType) || "https".equals(pType)) {
+                    ProxyHTTP proxy = new ProxyHTTP(pHost, pPort);
+                    if (!pUser.isEmpty()) proxy.setUserPasswd(pUser, pPass);
+                    session.setProxy(proxy);
+                } else if (pType.startsWith("socks")) {
+                    ProxySOCKS5 proxy = new ProxySOCKS5(pHost, pPort);
+                    if (!pUser.isEmpty()) proxy.setUserPasswd(pUser, pPass);
+                    session.setProxy(proxy);
+                }
+            }
+        }
 
         Properties config = new Properties();
-        config.put("StrictHostKeyChecking", "no");
+        // Fail closed: only explicitly trusted keys may authenticate this server.
+        File knownHostsFile = new File(new File(getFilesDir(), ".ssh"), "known_hosts");
+        if (knownHostsFile.isFile()) jsch.setKnownHosts(knownHostsFile.getAbsolutePath());
+        JSONArray trustedHosts = cfg.optJSONArray("knownHosts");
+        if (trustedHosts != null) {
+            for (int i = 0; i < trustedHosts.length(); i++) {
+                JSONObject trusted = trustedHosts.optJSONObject(i);
+                if (trusted == null) continue;
+                String trustedName = trusted.optString("hostname", "");
+                String originalHost = cfg.optString("hostname", cfg.optString("host", ""));
+                int originalPort = cfg.optInt("port", cfg.optInt("sshPort", 22));
+                if (!trustedName.equals(originalHost) || trusted.optInt("port", 22) != originalPort) continue;
+                byte[] key = Base64.decode(trusted.optString("publicKey", ""), Base64.DEFAULT);
+                String alias = originalPort == 22 ? originalHost : "[" + originalHost + "]:" + originalPort;
+                jsch.getHostKeyRepository().add(new com.jcraft.jsch.HostKey(alias, key), null);
+            }
+        }
+        String originalHost = cfg.optString("hostname", cfg.optString("host", hostname));
+        int originalPort = cfg.optInt("port", cfg.optInt("sshPort", 22));
+        session.setHostKeyAlias(originalPort == 22 ? originalHost : "[" + originalHost + "]:" + originalPort);
+        config.put("StrictHostKeyChecking", "yes");
         config.put("PreferredAuthentications", "publickey,keyboard-interactive,password");
         if (legacyAlgorithms) {
             config.put("PubkeyAcceptedAlgorithms",
@@ -846,6 +1394,191 @@ public class MainActivity extends Activity {
         return f.delete();
     }
 
+    private static String readHttpLine(InputStream in) throws Exception {
+        ByteArrayOutputStream line = new ByteArrayOutputStream();
+        int prev = -1;
+        int c;
+        while ((c = in.read()) != -1) {
+            if (prev == '\r' && c == '\n') {
+                byte[] arr = line.toByteArray();
+                return new String(arr, 0, Math.max(0, arr.length - 1), StandardCharsets.ISO_8859_1);
+            }
+            line.write(c);
+            prev = c;
+        }
+        if (line.size() == 0) return null;
+        return new String(line.toByteArray(), StandardCharsets.ISO_8859_1);
+    }
+
+    private JSONObject executeRawHttpSocketRequest(String urlStr, String method, JSONObject hdrs, String bodyStr, boolean skipTlsVerify, int redirectsLeft) throws Exception {
+        URL url = new URL(urlStr);
+        boolean isHttps = "https".equalsIgnoreCase(url.getProtocol());
+        if (!isHttps && !"http".equalsIgnoreCase(url.getProtocol())) throw new IllegalArgumentException("Only HTTP(S) URLs are supported");
+        if (!method.matches("[A-Z]+")) throw new IllegalArgumentException("Invalid HTTP method");
+        String host = url.getHost();
+        int port = url.getPort() > 0 ? url.getPort() : (isHttps ? 443 : 80);
+        String path = url.getFile();
+        if (path == null || path.isEmpty()) path = "/";
+        if (path.indexOf('\r') >= 0 || path.indexOf('\n') >= 0 || path.indexOf(' ') >= 0) throw new IllegalArgumentException("Invalid HTTP path");
+
+        Socket sock = new Socket();
+        try {
+            sock.connect(new InetSocketAddress(host, port), 15000);
+            sock.setSoTimeout(30000);
+            if (isHttps) {
+                SSLContext sc = SSLContext.getInstance("TLS");
+                if (skipTlsVerify) {
+                    TrustManager[] trustAll = new TrustManager[]{new X509TrustManager() {
+                        @Override public void checkClientTrusted(X509Certificate[] c, String a) {}
+                        @Override public void checkServerTrusted(X509Certificate[] c, String a) {}
+                        @Override public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
+                    }};
+                    sc.init(null, trustAll, new java.security.SecureRandom());
+                } else {
+                    sc.init(null, null, null);
+                }
+                javax.net.ssl.SSLSocket tls = (javax.net.ssl.SSLSocket) sc.getSocketFactory().createSocket(sock, host, port, true);
+                sock = tls;
+                tls.setSoTimeout(30000);
+                if (!skipTlsVerify) {
+                    javax.net.ssl.SSLParameters parameters = tls.getSSLParameters();
+                    parameters.setEndpointIdentificationAlgorithm("HTTPS");
+                    tls.setSSLParameters(parameters);
+                }
+                tls.startHandshake();
+            }
+        } catch (Exception e) {
+            try { sock.close(); } catch (Exception ignored) {}
+            throw e;
+        }
+
+        try (Socket autoClose = sock) {
+            OutputStream os = autoClose.getOutputStream();
+            InputStream is = autoClose.getInputStream();
+            byte[] bodyBytes = (bodyStr != null && !bodyStr.isEmpty()) ? bodyStr.getBytes(StandardCharsets.UTF_8) : new byte[0];
+
+            StringBuilder req = new StringBuilder();
+            req.append(method).append(" ").append(path).append(" HTTP/1.1\r\n");
+            boolean hasHost = false;
+            boolean hasConn = false;
+            boolean hasLen = false;
+            if (hdrs != null) {
+                JSONArray names = hdrs.names();
+                if (names != null) {
+                    for (int i = 0; i < names.length(); i++) {
+                        String k = names.getString(i);
+                        String v = hdrs.optString(k, "");
+                        if (!k.matches("[!#$%&'*+.^_`|~0-9A-Za-z-]+") || v.indexOf('\r') >= 0 || v.indexOf('\n') >= 0) throw new IllegalArgumentException("Invalid HTTP header");
+                        if (k.equalsIgnoreCase("Host")) hasHost = true;
+                        if (k.equalsIgnoreCase("Connection")) hasConn = true;
+                        if (k.equalsIgnoreCase("Content-Length")) hasLen = true;
+                        if (!v.isEmpty()) {
+                            req.append(k).append(": ").append(v).append("\r\n");
+                        }
+                    }
+                }
+            }
+            if (!hasHost) {
+                String hostHeader = (url.getPort() > 0 && url.getPort() != 80 && url.getPort() != 443)
+                        ? (host + ":" + port) : host;
+                req.append("Host: ").append(hostHeader).append("\r\n");
+            }
+            if (!hasConn) {
+                req.append("Connection: close\r\n");
+            }
+            if (!hasLen && bodyBytes.length > 0) {
+                req.append("Content-Length: ").append(bodyBytes.length).append("\r\n");
+            }
+            req.append("\r\n");
+
+            os.write(req.toString().getBytes(StandardCharsets.UTF_8));
+            if (bodyBytes.length > 0) {
+                os.write(bodyBytes);
+            }
+            os.flush();
+
+            String statusLine = readHttpLine(is);
+            if (statusLine == null) {
+                throw new IllegalStateException("Empty HTTP response");
+            }
+            int status = 0;
+            String[] statusParts = statusLine.split(" ", 3);
+            if (statusParts.length >= 2) {
+                try { status = Integer.parseInt(statusParts[1].trim()); } catch (Exception ignored) {}
+            }
+
+            JSONObject respHeaders = new JSONObject();
+            int contentLength = -1;
+            boolean chunked = false;
+            String location = null;
+            String line;
+            while ((line = readHttpLine(is)) != null && !line.isEmpty()) {
+                int colon = line.indexOf(':');
+                if (colon > 0) {
+                    String hk = line.substring(0, colon).trim();
+                    String hv = line.substring(colon + 1).trim();
+                    respHeaders.put(hk.toLowerCase(Locale.US), hv);
+                    if ("content-length".equalsIgnoreCase(hk)) {
+                        try { contentLength = Integer.parseInt(hv); } catch (Exception ignored) {}
+                    } else if ("transfer-encoding".equalsIgnoreCase(hk) && hv.toLowerCase(Locale.US).contains("chunked")) {
+                        chunked = true;
+                    } else if ("location".equalsIgnoreCase(hk)) {
+                        location = hv;
+                    }
+                }
+            }
+
+            ByteArrayOutputStream respBody = new ByteArrayOutputStream();
+            if (!"HEAD".equalsIgnoreCase(method) && status != 204 && status != 304) {
+                if (chunked) {
+                    while (true) {
+                        String sizeLine = readHttpLine(is);
+                        if (sizeLine == null) throw new java.io.EOFException("Truncated HTTP chunks");
+                        int semi = sizeLine.indexOf(';');
+                        String hex = (semi >= 0 ? sizeLine.substring(0, semi) : sizeLine).trim();
+                        if (hex.isEmpty()) continue;
+                        int chunkSize = Integer.parseInt(hex, 16);
+                        if (chunkSize <= 0) {
+                            readHttpLine(is);
+                            break;
+                        }
+                        byte[] chunkBuf = new byte[Math.min(chunkSize, 16384)];
+                        int remaining = chunkSize;
+                        while (remaining > 0) {
+                            int r = is.read(chunkBuf, 0, Math.min(chunkBuf.length, remaining));
+                            if (r == -1) throw new java.io.EOFException("Truncated HTTP body");
+                            respBody.write(chunkBuf, 0, r);
+                            remaining -= r;
+                        }
+                        readHttpLine(is); // consume CRLF after chunk
+                    }
+                } else if (contentLength >= 0) {
+                    byte[] buf = new byte[8192];
+                    int remaining = contentLength;
+                    while (remaining > 0) {
+                        int r = is.read(buf, 0, Math.min(buf.length, remaining));
+                        if (r == -1) throw new java.io.EOFException("Truncated HTTP body");
+                        respBody.write(buf, 0, r);
+                        remaining -= r;
+                    }
+                } else {
+                    byte[] buf = new byte[8192];
+                    int r;
+                    while ((r = is.read(buf)) != -1) {
+                        respBody.write(buf, 0, r);
+                    }
+                }
+            }
+
+            JSONObject out = new JSONObject();
+            out.put("ok", status >= 200 && status < 300);
+            out.put("status", status);
+            out.put("headers", respHeaders);
+            out.put("data", new String(respBody.toByteArray(), StandardCharsets.UTF_8));
+            return out;
+        }
+    }
+
     private HttpURLConnection openHttpConnection(String urlStr, String method, boolean skipTlsVerify) throws Exception {
         URL url = new URL(urlStr);
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
@@ -866,12 +1599,31 @@ public class MainActivity extends Activity {
             });
         }
         conn.setRequestMethod(method);
+        // Never let the platform replay credentials or request bodies on redirects.
+        conn.setInstanceFollowRedirects(false);
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(30000);
         return conn;
     }
 
     public class NetcattyNativeBridge {
+
+        @JavascriptInterface
+        public boolean credentialsAvailable() {
+            return CredentialCipher.available();
+        }
+
+        @JavascriptInterface
+        public String credentialsEncrypt(String plaintext) {
+            try { return CredentialCipher.encrypt(plaintext); }
+            catch (Exception e) { return ""; }
+        }
+
+        @JavascriptInterface
+        public String credentialsDecrypt(String ciphertext) {
+            try { return CredentialCipher.decrypt(ciphertext); }
+            catch (Exception e) { return ""; }
+        }
 
         @JavascriptInterface
         public String getDeviceSysInfo() {
@@ -916,6 +1668,36 @@ public class MainActivity extends Activity {
                         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                         startActivity(intent);
                     } catch (Exception ignored) {}
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void openExternal(final String url) {
+            openExternalUrl(url);
+        }
+
+        @JavascriptInterface
+        public void requestOpenFilePicker(final String callbackId) {
+            mainHandler.post(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        pendingImportCallbackId = callbackId;
+                        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                        intent.addCategory(Intent.CATEGORY_OPENABLE);
+                        intent.setType("*/*");
+                        startActivityForResult(intent, REQ_IMPORT_FILE);
+                    } catch (Exception e) {
+                        pendingImportCallbackId = null;
+                        try {
+                            JSONObject ev = new JSONObject();
+                            ev.put("callbackId", callbackId);
+                            ev.put("canceled", true);
+                            ev.put("error", e.getMessage() != null ? e.getMessage() : e.toString());
+                            emitToJs("dialog:open-file-result", ev);
+                        } catch (Exception ignored) {}
+                    }
                 }
             });
         }
@@ -1489,16 +2271,16 @@ public class MainActivity extends Activity {
                         ChannelSftp sftp = ensureSftpChannel(sftpId);
                         ByteArrayOutputStream baos = new ByteArrayOutputStream();
                         synchronized (sftp) {
-                            InputStream is = sftp.get(remotePath);
+                            try (InputStream is = sftp.get(remotePath)) {
                             byte[] buf = new byte[16384];
                             int n;
                             int total = 0;
                             while ((n = is.read(buf)) != -1) {
+                                if (total > 8 * 1024 * 1024 - n) throw new java.io.IOException("File exceeds 8 MiB read limit; use download instead");
                                 baos.write(buf, 0, n);
                                 total += n;
-                                if (total >= 8 * 1024 * 1024) break;
                             }
-                            is.close();
+                            }
                         }
                         byte[] bytes = baos.toByteArray();
                         JSONObject res = new JSONObject();
@@ -1524,18 +2306,207 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public void sftpWriteFile(final String reqId, final String sftpId, final String remotePath, final String contentOrB64, final boolean isBase64) {
+            ioPool.execute(new Runnable() {
+                @Override public void run() {
+                    try {
+                        ChannelSftp sftp = ensureSftpChannel(sftpId);
+                        synchronized (sftp) {
+                        byte[] bytes = isBase64 ? Base64.decode(contentOrB64, Base64.DEFAULT) : contentOrB64.getBytes(StandardCharsets.UTF_8);
+                        String stagingPath = remotePath + ".netcatty-write-" + java.util.UUID.randomUUID().toString();
+                        try {
+                            try (InputStream input = new ByteArrayInputStream(bytes)) { sftp.put(input, stagingPath, ChannelSftp.OVERWRITE); }
+                            if (sftp.stat(stagingPath).getSize() != bytes.length) throw new java.io.IOException("Incomplete write");
+                            sftp.rename(stagingPath, remotePath);
+                        } finally {
+                            try { sftp.rm(stagingPath); } catch (Exception ignored) {}
+                        }
+                        }
+                        JSONObject res = new JSONObject();
+                        res.put("reqId", reqId); res.put("ok", true); res.put("success", true);
+                        emitToJs("async_response", res);
+                    } catch (Exception e) {
+                        try {
+                            JSONObject res = new JSONObject();
+                            res.put("reqId", reqId); res.put("ok", false); res.put("success", false);
+                            res.put("error", e.getMessage() != null ? e.getMessage() : "SFTP operation failed");
+                            emitToJs("async_response", res);
+                        } catch (Exception ignored) {}
+                    }
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void sftpMkdir(final String reqId, final String sftpId, final String remotePath) {
+            ioPool.execute(new Runnable() {
+                @Override public void run() {
+                    try {
+                        ChannelSftp sftp = ensureSftpChannel(sftpId);
+                        synchronized (sftp) {
+                        sftp.mkdir(remotePath);
+                        }
+                        JSONObject res = new JSONObject();
+                        res.put("reqId", reqId); res.put("ok", true); res.put("success", true);
+                        emitToJs("async_response", res);
+                    } catch (Exception e) {
+                        try {
+                            JSONObject res = new JSONObject();
+                            res.put("reqId", reqId); res.put("ok", false); res.put("success", false);
+                            res.put("error", e.getMessage() != null ? e.getMessage() : "SFTP operation failed");
+                            emitToJs("async_response", res);
+                        } catch (Exception ignored) {}
+                    }
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void sftpDelete(final String reqId, final String sftpId, final String remotePath) {
+            ioPool.execute(new Runnable() {
+                @Override public void run() {
+                    try {
+                        ChannelSftp sftp = ensureSftpChannel(sftpId);
+                        synchronized (sftp) {
+                        deleteSftpEntryRecursive(sftp, remotePath);
+                        }
+                        JSONObject res = new JSONObject();
+                        res.put("reqId", reqId); res.put("ok", true); res.put("success", true);
+                        emitToJs("async_response", res);
+                    } catch (Exception e) {
+                        try {
+                            JSONObject res = new JSONObject();
+                            res.put("reqId", reqId); res.put("ok", false); res.put("success", false);
+                            res.put("error", e.getMessage() != null ? e.getMessage() : "SFTP operation failed");
+                            emitToJs("async_response", res);
+                        } catch (Exception ignored) {}
+                    }
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void sftpRename(final String reqId, final String sftpId, final String oldPath, final String newPath) {
+            ioPool.execute(new Runnable() {
+                @Override public void run() {
+                    try {
+                        ChannelSftp sftp = ensureSftpChannel(sftpId);
+                        synchronized (sftp) {
+                        sftp.rename(oldPath, newPath);
+                        }
+                        JSONObject res = new JSONObject();
+                        res.put("reqId", reqId); res.put("ok", true); res.put("success", true);
+                        emitToJs("async_response", res);
+                    } catch (Exception e) {
+                        try {
+                            JSONObject res = new JSONObject();
+                            res.put("reqId", reqId); res.put("ok", false); res.put("success", false);
+                            res.put("error", e.getMessage() != null ? e.getMessage() : "SFTP operation failed");
+                            emitToJs("async_response", res);
+                        } catch (Exception ignored) {}
+                    }
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void sftpChmod(final String reqId, final String sftpId, final String remotePath, final String modeOctal) {
+            ioPool.execute(new Runnable() {
+                @Override public void run() {
+                    try {
+                        ChannelSftp sftp = ensureSftpChannel(sftpId);
+                        synchronized (sftp) {
+                        if (modeOctal == null || !modeOctal.matches("[0-7]{3,4}")) throw new IllegalArgumentException("Invalid octal mode");
+                        sftp.chmod(Integer.parseInt(modeOctal, 8), remotePath);
+                        }
+                        JSONObject res = new JSONObject();
+                        res.put("reqId", reqId); res.put("ok", true); res.put("success", true);
+                        emitToJs("async_response", res);
+                    } catch (Exception e) {
+                        try {
+                            JSONObject res = new JSONObject();
+                            res.put("reqId", reqId); res.put("ok", false); res.put("success", false);
+                            res.put("error", e.getMessage() != null ? e.getMessage() : "SFTP operation failed");
+                            emitToJs("async_response", res);
+                        } catch (Exception ignored) {}
+                    }
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void sftpStreamUploadFromLocal(final String reqId, final String transferId, final String sftpId, final String localPath, final String remotePath) {
+            ioPool.execute(new Runnable() {
+                @Override public void run() {
+                    try {
+                        ChannelSftp sftp = ensureSftpChannel(sftpId);
+                        synchronized (sftp) {
+                        final File source = resolveLocalFile(localPath);
+                        if (!source.isFile()) throw new java.io.IOException("Upload source is not a file");
+                        final long startedAt = System.currentTimeMillis();
+                        final String uploadPath = remotePath + ".netcatty-upload-" + java.util.UUID.randomUUID().toString();
+                        try {
+                        try (InputStream input = new FileInputStream(source)) {
+                            sftp.put(input, uploadPath, new SftpProgressMonitor() {
+                                private long transferred;
+                                @Override public void init(int op, String src, String dst, long max) {}
+                                @Override public boolean count(long count) {
+                                    transferred += count;
+                                    try {
+                                        JSONObject event = new JSONObject();
+                                        event.put("type", "progress"); event.put("direction", "upload");
+                                        event.put("transferId", transferId); event.put("transferred", transferred);
+                                        event.put("totalBytes", source.length());
+                                        emitToJs("sftp_transfer_event", event);
+                                    } catch (Exception ignored) {}
+                                    return !Boolean.TRUE.equals(cancelledTransfers.get(transferId));
+                                }
+                                @Override public void end() {}
+                            }, ChannelSftp.OVERWRITE);
+                        }
+                        if (Boolean.TRUE.equals(cancelledTransfers.remove(transferId))) throw new java.io.IOException("Upload cancelled");
+                        if (sftp.stat(uploadPath).getSize() != source.length()) throw new java.io.IOException("Incomplete upload");
+                        sftp.rename(uploadPath, remotePath);
+                        JSONObject event = new JSONObject();
+                        event.put("type", "completed"); event.put("direction", "upload");
+                        event.put("transferId", transferId); event.put("transferred", source.length());
+                        event.put("totalBytes", source.length()); event.put("startedAt", startedAt);
+                        emitToJs("sftp_transfer_event", event);
+                        } finally {
+                            cancelledTransfers.remove(transferId);
+                            try { sftp.rm(uploadPath); } catch (Exception ignored) {}
+                        }
+                        }
+                        JSONObject res = new JSONObject();
+                        res.put("reqId", reqId); res.put("ok", true); res.put("success", true);
+                        emitToJs("async_response", res);
+                    } catch (Exception e) {
+                        try {
+                            JSONObject res = new JSONObject();
+                            res.put("reqId", reqId); res.put("ok", false); res.put("success", false);
+                            res.put("error", e.getMessage() != null ? e.getMessage() : "SFTP operation failed");
+                            emitToJs("async_response", res);
+                        } catch (Exception ignored) {}
+                    }
+                }
+            });
+        }
+
+        @JavascriptInterface
         public void sftpStreamDownloadToLocal(final String reqId, final String transferId, final String sftpId, final String remotePath, final String localPath) {
             ioPool.execute(new Runnable() {
                 @Override
                 public void run() {
                     final long startedAt = System.currentTimeMillis();
-                    cancelledTransfers.remove(transferId);
+                    File stagingFile = null;
                     try {
                         ChannelSftp sftp = ensureSftpChannel(sftpId);
-                        File destFile = new File(localPath);
+                        final File destFile = resolveLocalFile(localPath).getAbsoluteFile();
                         if (destFile.getParentFile() != null && !destFile.getParentFile().exists()) {
-                            destFile.getParentFile().mkdirs();
+                            if (!destFile.getParentFile().mkdirs() && !destFile.getParentFile().isDirectory()) throw new java.io.IOException("Cannot create download directory");
                         }
+                        if (destFile.isDirectory()) throw new java.io.IOException("Download target is a directory");
+                        stagingFile = File.createTempFile(".netcatty-download-", ".part", destFile.getParentFile());
                         final String fileName = destFile.getName();
 
                         synchronized (sftp) {
@@ -1554,7 +2525,7 @@ public class MainActivity extends Activity {
                             startEv.put("transferred", 0);
                             emitToJs("sftp_transfer_event", startEv);
 
-                            try (FileOutputStream fos = new FileOutputStream(destFile)) {
+                            try (FileOutputStream fos = new FileOutputStream(stagingFile)) {
                                 sftp.get(remotePath, fos, new SftpProgressMonitor() {
                                     private long transferred = 0;
                                     private long lastEmit = 0;
@@ -1593,10 +2564,11 @@ public class MainActivity extends Activity {
                                     @Override
                                     public void end() {}
                                 });
+                                fos.getFD().sync();
                             }
 
-                            if (Boolean.TRUE.equals(cancelledTransfers.remove(transferId))) {
-                                destFile.delete();
+                            synchronized (cancelledTransfers) {
+                            if (Boolean.TRUE.equals(cancelledTransfers.get(transferId))) {
                                 JSONObject cancelEv = new JSONObject();
                                 cancelEv.put("type", "cancelled");
                                 cancelEv.put("transferId", transferId);
@@ -1612,6 +2584,10 @@ public class MainActivity extends Activity {
                                 return;
                             }
 
+                            if (stagingFile.length() != totalBytes) throw new java.io.IOException("Incomplete download or remote file changed");
+                            // Same-directory POSIX rename atomically replaces only after a complete download.
+                            android.system.Os.rename(stagingFile.getAbsolutePath(), destFile.getAbsolutePath());
+                            }
                             JSONObject compEv = new JSONObject();
                             compEv.put("type", "completed");
                             compEv.put("transferId", transferId);
@@ -1644,11 +2620,14 @@ public class MainActivity extends Activity {
 
                             JSONObject res = new JSONObject();
                             res.put("reqId", reqId);
-                            res.put("ok", true);
+                            res.put("ok", false);
                             res.put("transferId", transferId);
                             res.put("error", msg);
                             emitToJs("async_response", res);
                         } catch (Exception ignored) {}
+                    } finally {
+                        if (stagingFile != null && stagingFile.exists()) stagingFile.delete();
+                        cancelledTransfers.remove(transferId);
                     }
                 }
             });
@@ -1657,7 +2636,9 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void cancelSftpTransfer(final String transferId) {
             if (transferId != null) {
-                cancelledTransfers.put(transferId, true);
+                synchronized (cancelledTransfers) {
+                    cancelledTransfers.put(transferId, true);
+                }
             }
         }
 
@@ -1793,26 +2774,27 @@ public class MainActivity extends Activity {
             ioPool.execute(new Runnable() {
                 @Override
                 public void run() {
+                    String tunnelId = "tunnel-" + System.currentTimeMillis();
+                    String ruleId = tunnelId;
                     try {
                         JSONObject cfg = new JSONObject(optionsJson);
-                        String tunnelId = cfg.optString("tunnelId", "tunnel-" + System.currentTimeMillis());
-                        String ruleId = cfg.optString("ruleId", tunnelId);
+                        tunnelId = cfg.optString("tunnelId", tunnelId);
+                        ruleId = cfg.optString("ruleId", tunnelId);
 
                         stopPortForwardInternal(tunnelId);
 
+                        JSONObject connectingEv = new JSONObject();
+                        connectingEv.put("tunnelId", tunnelId);
+                        connectingEv.put("ruleId", ruleId);
+                        connectingEv.put("status", "connecting");
+                        emitToJs("port_forward_status", connectingEv);
+
                         SshContext sc = createConnectedSshContext(cfg);
                         String type = cfg.optString("type", "local");
-                        String bindAddr = cfg.optString("bindAddress", "127.0.0.1");
+                        String bindAddr = cfg.optString("bindAddress", cfg.optString("localHost", "127.0.0.1"));
                         int localPort = cfg.optInt("localPort", 8080);
                         String remoteHost = cfg.optString("remoteHost", "127.0.0.1");
                         int remotePort = cfg.optInt("remotePort", 80);
-
-                        if ("remote".equalsIgnoreCase(type)) {
-                            sc.session.setPortForwardingR(bindAddr, remotePort, remoteHost, localPort);
-                        } else {
-                            // Local or Dynamic fallback
-                            sc.session.setPortForwardingL(bindAddr, localPort, remoteHost, remotePort);
-                        }
 
                         PortForwardContext pfc = new PortForwardContext();
                         pfc.tunnelId = tunnelId;
@@ -1825,23 +2807,44 @@ public class MainActivity extends Activity {
                         pfc.remoteHost = remoteHost;
                         pfc.remotePort = remotePort;
                         pfc.status = "active";
+
+                        if ("remote".equalsIgnoreCase(type)) {
+                            sc.session.setPortForwardingR(bindAddr, remotePort, remoteHost, localPort);
+                        } else if ("dynamic".equalsIgnoreCase(type)) {
+                            startDynamicSocks5Server(pfc);
+                        } else {
+                            int assigned = sc.session.setPortForwardingL(bindAddr, localPort, remoteHost, remotePort);
+                            if (assigned > 0) pfc.localPort = assigned;
+                        }
+
                         activeForwards.put(tunnelId, pfc);
 
                         JSONObject statusEv = new JSONObject();
                         statusEv.put("tunnelId", tunnelId);
                         statusEv.put("ruleId", ruleId);
                         statusEv.put("status", "active");
+                        statusEv.put("localPort", pfc.localPort);
                         emitToJs("port_forward_status", statusEv);
+                        emitPortForwardRuntimeSnapshot();
 
                         JSONObject res = new JSONObject();
                         res.put("reqId", reqId);
                         res.put("ok", true);
                         res.put("success", true);
                         res.put("tunnelId", tunnelId);
+                        res.put("localPort", pfc.localPort);
                         emitToJs("async_response", res);
                     } catch (Exception e) {
                         try {
                             String msg = e.getMessage() != null ? e.getMessage() : e.toString();
+                            JSONObject errEv = new JSONObject();
+                            errEv.put("tunnelId", tunnelId);
+                            errEv.put("ruleId", ruleId);
+                            errEv.put("status", "error");
+                            errEv.put("error", msg);
+                            emitToJs("port_forward_status", errEv);
+                            emitPortForwardRuntimeSnapshot();
+
                             JSONObject res = new JSONObject();
                             res.put("reqId", reqId);
                             res.put("ok", true);
@@ -1859,12 +2862,16 @@ public class MainActivity extends Activity {
             ioPool.execute(new Runnable() {
                 @Override
                 public void run() {
+                    PortForwardContext existing = activeForwards.get(tunnelId);
+                    String ruleId = existing != null ? existing.ruleId : tunnelId;
                     stopPortForwardInternal(tunnelId);
                     try {
                         JSONObject statusEv = new JSONObject();
                         statusEv.put("tunnelId", tunnelId);
+                        statusEv.put("ruleId", ruleId);
                         statusEv.put("status", "inactive");
                         emitToJs("port_forward_status", statusEv);
+                        emitPortForwardRuntimeSnapshot();
                     } catch (Exception ignored) {}
                 }
             });
@@ -1878,6 +2885,7 @@ public class MainActivity extends Activity {
                     for (String tid : new ArrayList<>(activeForwards.keySet())) {
                         stopPortForwardInternal(tid);
                     }
+                    emitPortForwardRuntimeSnapshot();
                 }
             });
         }
@@ -1960,22 +2968,26 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public String listLocalFiles(String dirPath) {
             try {
-                File dir = (dirPath == null || dirPath.isEmpty() || "~".equals(dirPath) || ".".equals(dirPath))
-                        ? getFilesDir()
-                        : new File(dirPath);
+                File dir = resolveLocalFile(dirPath);
                 if (!dir.exists() || !dir.isDirectory()) {
                     dir = getFilesDir();
                 }
                 File[] children = dir.listFiles();
                 JSONArray arr = new JSONArray();
+                SimpleDateFormat isoFmt = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
+                isoFmt.setTimeZone(TimeZone.getTimeZone("UTC"));
                 if (children != null) {
                     for (File f : children) {
                         JSONObject item = new JSONObject();
+                        long bytes = f.isDirectory() ? 0L : f.length();
+                        long mtime = f.lastModified();
                         item.put("name", f.getName());
                         item.put("path", f.getAbsolutePath());
                         item.put("type", f.isDirectory() ? "directory" : "file");
-                        item.put("size", (f.isDirectory() ? 0 : f.length()) + " bytes");
-                        item.put("lastModified", f.lastModified());
+                        item.put("size", bytes + " bytes");
+                        item.put("sizeBytes", bytes);
+                        item.put("lastModified", isoFmt.format(new Date(mtime)));
+                        item.put("lastModifiedMs", mtime);
                         String perms = (f.canRead() ? "r" : "-")
                                 + (f.canWrite() ? "w" : "-")
                                 + (f.canExecute() ? "x" : "-")
@@ -1993,15 +3005,21 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public String statLocalFileSync(String filePath) {
             try {
-                File f = (filePath == null || filePath.isEmpty() || "~".equals(filePath))
-                        ? getFilesDir()
-                        : new File(filePath);
+                File f = resolveLocalFile(filePath);
                 if (!f.exists()) return "";
+                SimpleDateFormat isoFmt = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
+                isoFmt.setTimeZone(TimeZone.getTimeZone("UTC"));
                 JSONObject obj = new JSONObject();
                 obj.put("name", f.getName().isEmpty() ? "/" : f.getName());
                 obj.put("type", f.isDirectory() ? "directory" : "file");
                 obj.put("size", f.isDirectory() ? 0 : f.length());
-                obj.put("lastModified", f.lastModified());
+                obj.put("lastModified", isoFmt.format(new Date(f.lastModified())));
+                obj.put("lastModifiedMs", f.lastModified());
+                String perms = (f.canRead() ? "r" : "-")
+                        + (f.canWrite() ? "w" : "-")
+                        + (f.canExecute() ? "x" : "-")
+                        + "r-xr-x";
+                obj.put("permissions", perms);
                 return obj.toString();
             } catch (Exception e) {
                 return "";
@@ -2011,7 +3029,7 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public String readLocalFileB64(String filePath, int maxBytes) {
             try {
-                File f = new File(filePath);
+                File f = resolveLocalFile(filePath);
                 if (!f.exists() || !f.isFile()) return "";
                 long len = f.length();
                 int limit = maxBytes > 0 ? Math.min((int) len, maxBytes) : (int) Math.min(len, 10 * 1024 * 1024);
@@ -2032,7 +3050,7 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public boolean writeLocalFileB64(String filePath, String contentB64) {
             try {
-                File f = new File(filePath);
+                File f = resolveLocalFile(filePath);
                 if (f.getParentFile() != null && !f.getParentFile().exists()) {
                     f.getParentFile().mkdirs();
                 }
@@ -2050,7 +3068,7 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public boolean writeLocalFileText(String filePath, String content) {
             try {
-                File f = new File(filePath);
+                File f = resolveLocalFile(filePath);
                 if (f.getParentFile() != null && !f.getParentFile().exists()) {
                     f.getParentFile().mkdirs();
                 }
@@ -2067,7 +3085,7 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public boolean deleteLocalFile(String filePath) {
             try {
-                File f = new File(filePath);
+                File f = resolveLocalFile(filePath);
                 return deleteRecursively(f);
             } catch (Exception e) {
                 return false;
@@ -2077,8 +3095,8 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public boolean renameLocalFile(String oldPath, String newPath) {
             try {
-                File src = new File(oldPath);
-                File dst = new File(newPath);
+                File src = resolveLocalFile(oldPath);
+                File dst = resolveLocalFile(newPath);
                 return src.renameTo(dst);
             } catch (Exception e) {
                 return false;
@@ -2088,7 +3106,7 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public boolean mkdirLocal(String dirPath) {
             try {
-                File f = new File(dirPath);
+                File f = resolveLocalFile(dirPath);
                 return f.exists() ? f.isDirectory() : f.mkdirs();
             } catch (Exception e) {
                 return false;
@@ -2105,20 +3123,33 @@ public class MainActivity extends Activity {
                 public void run() {
                     HttpURLConnection conn = null;
                     try {
-                        conn = openHttpConnection(urlStr, method != null ? method : "GET", skipTlsVerify);
-                        conn.setInstanceFollowRedirects(true);
-                        if (headersJson != null && !headersJson.isEmpty()) {
-                            JSONObject hdrs = new JSONObject(headersJson);
-                            JSONArray names = hdrs.names();
-                            if (names != null) {
-                                for (int i = 0; i < names.length(); i++) {
-                                    String k = names.getString(i);
-                                    String v = hdrs.optString(k, "");
-                                    if (!v.isEmpty()) conn.setRequestProperty(k, v);
-                                }
+                        String upperMethod = (method != null && !method.trim().isEmpty())
+                                ? method.trim().toUpperCase(Locale.US) : "GET";
+                        JSONObject hdrs = (headersJson != null && !headersJson.isEmpty())
+                                ? new JSONObject(headersJson) : new JSONObject();
+
+                        boolean isStandardMethod = "GET".equals(upperMethod) || "POST".equals(upperMethod)
+                                || "HEAD".equals(upperMethod) || "OPTIONS".equals(upperMethod)
+                                || "PUT".equals(upperMethod) || "DELETE".equals(upperMethod);
+
+                        if (!isStandardMethod) {
+                            JSONObject rawRes = executeRawHttpSocketRequest(urlStr, upperMethod, hdrs, bodyStr, skipTlsVerify, 5);
+                            rawRes.put("reqId", reqId);
+                            emitToJs("async_response", rawRes);
+                            return;
+                        }
+
+                        conn = openHttpConnection(urlStr, upperMethod, skipTlsVerify);
+                        conn.setInstanceFollowRedirects(false);
+                        JSONArray names = hdrs.names();
+                        if (names != null) {
+                            for (int i = 0; i < names.length(); i++) {
+                                String k = names.getString(i);
+                                String v = hdrs.optString(k, "");
+                                if (!v.isEmpty()) conn.setRequestProperty(k, v);
                             }
                         }
-                        if (bodyStr != null && !bodyStr.isEmpty() && !"GET".equalsIgnoreCase(method) && !"HEAD".equalsIgnoreCase(method)) {
+                        if (bodyStr != null && !bodyStr.isEmpty() && !"GET".equalsIgnoreCase(upperMethod) && !"HEAD".equalsIgnoreCase(upperMethod)) {
                             conn.setDoOutput(true);
                             byte[] bytes = bodyStr.getBytes(StandardCharsets.UTF_8);
                             OutputStream os = conn.getOutputStream();
@@ -2128,6 +3159,15 @@ public class MainActivity extends Activity {
                         }
 
                         int status = conn.getResponseCode();
+                        JSONObject respHeaders = new JSONObject();
+                        Map<String, List<String>> hMap = conn.getHeaderFields();
+                        if (hMap != null) {
+                            for (Map.Entry<String, List<String>> entry : hMap.entrySet()) {
+                                if (entry.getKey() != null && entry.getValue() != null && !entry.getValue().isEmpty()) {
+                                    respHeaders.put(entry.getKey().toLowerCase(Locale.US), entry.getValue().get(0));
+                                }
+                            }
+                        }
                         InputStream is = (status >= 200 && status < 400) ? conn.getInputStream() : conn.getErrorStream();
                         String respData = "";
                         if (is != null) {
@@ -2145,6 +3185,7 @@ public class MainActivity extends Activity {
                         res.put("reqId", reqId);
                         res.put("ok", status >= 200 && status < 300);
                         res.put("status", status);
+                        res.put("headers", respHeaders);
                         res.put("data", respData);
                         emitToJs("async_response", res);
                     } catch (Exception e) {
@@ -2272,20 +3313,7 @@ public class MainActivity extends Activity {
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         if (keyCode == KeyEvent.KEYCODE_BACK && webView != null) {
-            webView.evaluateJavascript(
-                    "(function(){ if(window.__handleAndroidBack && window.__handleAndroidBack()) return true; return false; })()",
-                    new ValueCallback<String>() {
-                        @Override
-                        public void onReceiveValue(String value) {
-                            if (!"true".equals(value)) {
-                                if (webView.canGoBack()) {
-                                    webView.goBack();
-                                } else {
-                                    moveTaskToBack(true);
-                                }
-                            }
-                        }
-                    });
+            onBackPressed();
             return true;
         }
         return super.onKeyDown(keyCode, event);

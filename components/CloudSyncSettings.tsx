@@ -158,6 +158,11 @@ const SyncDashboard: React.FC<SyncDashboardProps> = ({
     const [gitHubVerificationUri, setGitHubVerificationUri] = useState('');
     const [isPollingGitHub, setIsPollingGitHub] = useState(false);
     const activeGitHubAttemptIdRef = useRef<number | null>(null);
+    const gitHubAbortRef = useRef<AbortController | null>(null);
+    useEffect(() => {
+        if (!showGitHubModal) gitHubAbortRef.current?.abort();
+    }, [showGitHubModal]);
+    useEffect(() => () => { gitHubAbortRef.current?.abort(); }, []);
 
     // Conflict modal
     const [showConflictModal, setShowConflictModal] = useState(false);
@@ -292,6 +297,9 @@ const SyncDashboard: React.FC<SyncDashboardProps> = ({
 
     const ensureSyncablePayload = useCallback(
         (payload: SyncPayload): boolean => {
+            if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+                return true;
+            }
             const encryptedCredentialPaths = findSyncPayloadEncryptedCredentialPaths(payload);
             if (encryptedCredentialPaths.length === 0) return true;
 
@@ -467,6 +475,8 @@ const SyncDashboard: React.FC<SyncDashboardProps> = ({
     const handleConnectGitHub = async () => {
         if (!beginPendingConnect('github')) return;
         const cancelController = new AbortController();
+        gitHubAbortRef.current?.abort();
+        gitHubAbortRef.current = cancelController;
         let authAttemptId: number | null = null;
         try {
             await disconnectOtherProviders('github');
@@ -493,6 +503,9 @@ const SyncDashboard: React.FC<SyncDashboardProps> = ({
                 setShowGitHubModal(false);
             }
             toast.success(t('cloudSync.connect.github.success'));
+            if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode && sync.securityState === 'UNLOCKED') {
+                void handleSync('github');
+            }
         } catch (error) {
             if (activeGitHubAttemptIdRef.current === authAttemptId) {
                 activeGitHubAttemptIdRef.current = null;
@@ -513,6 +526,10 @@ const SyncDashboard: React.FC<SyncDashboardProps> = ({
 
     // Connect Google (disconnect others first - single provider only)
     const handleConnectGoogle = async () => {
+        if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+            toast.error('Google OAuth 尚未在此移动版本配置，不能连接');
+            return;
+        }
         if (!beginPendingConnect('google')) return;
         try {
             await disconnectOtherProviders('google');
@@ -532,6 +549,10 @@ const SyncDashboard: React.FC<SyncDashboardProps> = ({
 
     // Connect OneDrive (disconnect others first - single provider only)
     const handleConnectOneDrive = async () => {
+        if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+            toast.error('OneDrive OAuth 尚未在此移动版本配置，不能连接');
+            return;
+        }
         if (!beginPendingConnect('onedrive')) return;
         try {
             await disconnectOtherProviders('onedrive');
@@ -627,6 +648,9 @@ const SyncDashboard: React.FC<SyncDashboardProps> = ({
             await sync.connectWebDAV(config);
             toast.success(t('cloudSync.connect.webdav.success'));
             setShowWebdavDialog(false);
+            if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode && sync.securityState === 'UNLOCKED') {
+                void handleSync('webdav');
+            }
         } catch (error) {
             const message = error instanceof Error ? error.message : t('common.unknownError');
             setWebdavError(message);
@@ -665,6 +689,9 @@ const SyncDashboard: React.FC<SyncDashboardProps> = ({
             await sync.connectS3(config);
             toast.success(t('cloudSync.connect.s3.success'));
             setShowS3Dialog(false);
+            if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode && sync.securityState === 'UNLOCKED') {
+                void handleSync('s3');
+            }
         } catch (error) {
             const message = error instanceof Error ? error.message : t('common.unknownError');
             setS3Error(message);

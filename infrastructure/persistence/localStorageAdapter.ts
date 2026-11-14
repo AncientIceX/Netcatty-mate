@@ -45,8 +45,11 @@ function emitLocalStorageAdapterChanged(key: string): void {
 }
 
 /**
- * Safely write to localStorage, catching QuotaExceededError.
- * Returns true if the write succeeded, false if storage quota was exceeded.
+ * localStorage is the sole authority for every read/write/remove path.
+ * Do not restore unversioned native mirrors: quota failures, smaller rewrites
+ * and removals would otherwise expose stale values (and sanitized keys collide).
+ * A native backend needs atomic commits and tombstones before it can be used here.
+ * Returns false on quota exhaustion so callers can report persistence failure.
  */
 function safeSetItem(key: string, value: string): boolean {
   try {

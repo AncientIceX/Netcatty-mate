@@ -68,6 +68,9 @@ export async function startProviderAuthImpl(this: any,
           data: { ...deviceFlow, authAttemptId },
         };
       } else {
+        if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+          throw new Error(`${provider} OAuth is not supported on this mobile build`);
+        }
         // Google and OneDrive use PKCE with redirect
         if (!redirectUri) {
           throw new Error(

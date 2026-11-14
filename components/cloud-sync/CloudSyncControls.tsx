@@ -7,7 +7,8 @@
  * - Sync status and conflict resolution
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
+import { submitGitHubPat, cancelGitHubPat } from '../../infrastructure/services/adapters/GitHubAdapter';
 import {
     AlertTriangle,
     Check,
@@ -30,6 +31,7 @@ import {
 
 import { useI18n } from '../../application/i18n/I18nProvider';
 import { useCloudSync } from '../../application/state/useCloudSync';
+import { netcattyBridge } from '../../infrastructure/services/netcattyBridge';
 
 
 import { type CloudProvider, type ConflictInfo, type SyncChangeEntityKey, type SyncEntityChangeCounts, formatLastSync } from '../../domain/sync';
@@ -494,17 +496,42 @@ export const GitHubDeviceFlowModal: React.FC<GitHubDeviceFlowModalProps> = ({
 }) => {
     const { t } = useI18n();
     const [copied, setCopied] = useState(false);
+    const [patInput, setPatInput] = useState('');
+    const isPatMode = userCode.startsWith('PAT-TOKEN:');
+    useEffect(() => {
+        setPatInput('');
+        if (!isOpen || !isPatMode) return;
+        return () => cancelGitHubPat(userCode);
+    }, [isOpen, isPatMode, userCode]);
 
     const copyCode = useCallback(() => {
-        navigator.clipboard.writeText(userCode);
+        if (netcattyBridge.get()?.writeClipboardText) {
+            void netcattyBridge.get()?.writeClipboardText?.(userCode);
+        } else {
+            navigator.clipboard?.writeText?.(userCode);
+        }
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
     }, [userCode]);
 
+    const openUrl = useCallback(() => {
+        if (netcattyBridge.get()?.openExternal) {
+            void netcattyBridge.get()?.openExternal?.(verificationUri);
+        } else {
+            window.open(verificationUri, "_blank", "noopener,noreferrer");
+        }
+    }, [verificationUri]);
+
+    const submitPat = useCallback(() => {
+        const trimmed = patInput.trim();
+        if (!trimmed) return;
+        if (submitGitHubPat(userCode, trimmed)) setPatInput('');
+    }, [patInput, userCode]);
+
     if (!isOpen) return null;
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
             <div className="bg-background rounded-lg shadow-xl w-full max-w-md p-6 relative">
                 <button
                     onClick={onClose}
@@ -518,33 +545,69 @@ export const GitHubDeviceFlowModal: React.FC<GitHubDeviceFlowModalProps> = ({
                         <Github className="w-8 h-8 text-white" />
                     </div>
 
-                    <h3 className="text-lg font-semibold mb-2">{t('cloudSync.githubFlow.title')}</h3>
-                    <p className="text-sm text-muted-foreground mb-6">
-                        {t('cloudSync.githubFlow.desc')}
-                    </p>
+                    {isPatMode ? (
+                        <>
+                            <h3 className="text-lg font-semibold mb-2">连接 GitHub Gist 同步</h3>
+                            <p className="text-sm text-muted-foreground mb-4">
+                                请输入具有 <code className="px-1 py-0.5 bg-muted rounded text-xs">gist</code> 权限的 GitHub Personal Access Token（手机端严格锁定为只读下拉同步）：
+                            </p>
+                            <div className="space-y-3 mb-4 text-left">
+                                <Input
+                                    type="password"
+                                    value={patInput}
+                                    onChange={(e) => setPatInput(e.target.value)}
+                                    placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+                                    className="font-mono text-sm"
+                                />
+                                <Button
+                                    onClick={submitPat}
+                                    disabled={!patInput.trim()}
+                                    className="w-full gap-2"
+                                >
+                                    <ShieldCheck size={14} />
+                                    验证并连接 GitHub
+                                </Button>
+                                <Button
+                                    variant="outline"
+                                    onClick={openUrl}
+                                    className="w-full gap-2"
+                                >
+                                    <ExternalLink size={14} />
+                                    前往 GitHub 生成 Token (gist 权限)
+                                </Button>
+                            </div>
+                        </>
+                    ) : (
+                        <>
+                            <h3 className="text-lg font-semibold mb-2">{t('cloudSync.githubFlow.title')}</h3>
+                            <p className="text-sm text-muted-foreground mb-6">
+                                {t('cloudSync.githubFlow.desc')}
+                            </p>
 
-                    <div className="bg-muted rounded-lg p-4 mb-4">
-                        <div className="font-mono text-2xl font-bold tracking-widest mb-2">
-                            {userCode}
-                        </div>
-                        <Button size="sm" variant="ghost" onClick={copyCode} className="gap-2">
-                            {copied ? <Check size={14} /> : <Copy size={14} />}
-                            {copied ? t('cloudSync.githubFlow.copied') : t('cloudSync.githubFlow.copyCode')}
-                        </Button>
-                    </div>
+                            <div className="bg-muted rounded-lg p-4 mb-4">
+                                <div className="font-mono text-2xl font-bold tracking-widest mb-2">
+                                    {userCode}
+                                </div>
+                                <Button size="sm" variant="ghost" onClick={copyCode} className="gap-2">
+                                    {copied ? <Check size={14} /> : <Copy size={14} />}
+                                    {copied ? t('cloudSync.githubFlow.copied') : t('cloudSync.githubFlow.copyCode')}
+                                </Button>
+                            </div>
 
-                    <Button
-                        onClick={() => window.open(verificationUri, "_blank", "noopener,noreferrer")}
-                        className="w-full gap-2 mb-4"
-                    >
-                        <ExternalLink size={14} />
-                        {t('cloudSync.githubFlow.openGitHub')}
-                    </Button>
+                            <Button
+                                onClick={openUrl}
+                                className="w-full gap-2 mb-4"
+                            >
+                                <ExternalLink size={14} />
+                                {t('cloudSync.githubFlow.openGitHub')}
+                            </Button>
+                        </>
+                    )}
 
                     {isPolling && (
                         <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
                             <Loader2 size={14} className="animate-spin" />
-                            {t('cloudSync.githubFlow.waiting')}
+                            {isPatMode ? '等待输入 Token 验证中...' : t('cloudSync.githubFlow.waiting')}
                         </div>
                     )}
                 </div>

@@ -147,6 +147,10 @@ export const generatePKCEChallenge = async (): Promise<PKCEChallenge> => {
 export const buildAuthUrl = async (
   redirectUri: string
 ): Promise<{ url: string; pkce: PKCEChallenge }> => {
+  if (!SYNC_CONSTANTS.ONEDRIVE_CLIENT_ID ||
+      (typeof window !== 'undefined' && (window as any).__netcattyMobileMode)) {
+    throw new Error('ONEDRIVE OAuth is not configured or supported on this mobile build');
+  }
   const pkce = await generatePKCEChallenge();
 
   const params = new URLSearchParams({
@@ -412,6 +416,9 @@ export const uploadSyncFile = async (
   accessToken: string,
   syncedFile: SyncedFile
 ): Promise<string> => {
+  if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+    throw new Error('手机端已锁定「只下拉同步，不上传同步」，禁止上传覆盖 OneDrive 云端数据');
+  }
   const bridge = netcattyBridge.get();
   if (bridge?.onedriveUploadSyncFile) {
     const result = await bridge.onedriveUploadSyncFile({
@@ -499,6 +506,9 @@ export const deleteSyncFile = async (
   accessToken: string,
   fileId: string
 ): Promise<void> => {
+  if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+    throw new Error('手机端已锁定「只下拉同步，不上传同步」，禁止删除 OneDrive 云端数据');
+  }
   const bridge = netcattyBridge.get();
   if (bridge?.onedriveDeleteSyncFile) {
     await bridge.onedriveDeleteSyncFile({ accessToken, fileId });
@@ -716,6 +726,9 @@ export class OneDriveAdapter {
    * Upload sync file
    */
   async upload(syncedFile: SyncedFile): Promise<string> {
+    if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+      throw new Error('Mobile cloud sync is download-only');
+    }
     return this.runWithAuthRetry(async (accessToken) => {
       this.fileId = await uploadSyncFile(accessToken, syncedFile);
       return this.fileId;
@@ -738,6 +751,9 @@ export class OneDriveAdapter {
    * Delete sync data
    */
   async deleteSync(): Promise<void> {
+    if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+      throw new Error('Mobile cloud sync is download-only');
+    }
     if (!this.tokens || !this.fileId) {
       return;
     }

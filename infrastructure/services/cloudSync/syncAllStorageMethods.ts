@@ -1053,6 +1053,9 @@ export function setAutoSyncImpl(this: any,enabled: boolean, intervalMinutes?: nu
   }
 
 export function startAutoSyncImpl(this: any): void {
+    // Mobile's UI hook owns the timer and protected apply/commit callback.
+    // Emitting SYNC_STARTED alone never performs a pull.
+    if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) return;
     if (this.autoSyncTimer) {
       return;
     }

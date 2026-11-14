@@ -178,6 +178,9 @@ export async function uploadToProviderImpl(this: any,
   syncSecurityGeneration?: number,
 ): Promise<SyncResult> {
     try {
+      if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+        throw new Error('Mobile cloud sync is download-only');
+      }
       assertSyncSecurityGeneration(this, syncSecurityGeneration);
       const resourceId = await adapter.upload(syncedFile, {
         signal: this.activeSyncAbortSignal,
@@ -385,8 +388,10 @@ export async function syncToProviderImpl(this: any,
       this.state.lastError = null;
       this.state.syncState = 'SYNCING';
       this.emit({ type: 'SYNC_STARTED', provider });
+      const syncSecurityGeneration = getSyncSecurityGeneration(this);
       try {
         const remote = await this.downloadFromProvider(provider);
+        assertSyncSecurityGeneration(this, syncSecurityGeneration);
         if (!remote) {
           this.updateProviderStatus(provider, 'connected');
           this.state.syncState = 'IDLE';
@@ -397,22 +402,33 @@ export async function syncToProviderImpl(this: any,
             action: 'none',
           };
         }
-        await this.commitRemoteInspection(provider, remote.remoteFile, remote.payload, {
-          recordDownload: true,
-        });
+        let committed = false;
         if (opts.applyConvergentPayload) {
-          await opts.applyConvergentPayload(remote.payload, async () => {});
+          await opts.applyConvergentPayload(remote.payload, async () => {
+            if (committed) return;
+            assertSyncSecurityGeneration(this, syncSecurityGeneration);
+            await this.commitRemoteInspection(provider, remote.remoteFile, remote.payload, {
+              recordDownload: true,
+            });
+            committed = true;
+          });
+          if (!committed) throw new Error('Remote payload apply completed without committing');
         }
+        // Without a protected applier, return the remote file for the caller
+        // to apply then commit. Never acknowledge data not yet installed locally.
         this.updateProviderStatus(provider, 'connected');
         this.state.syncState = 'IDLE';
         this.notifyStateChange();
-        this.emit({ type: 'SYNC_COMPLETED', provider, result: { success: true, provider, action: 'download', mergedPayload: remote.payload } });
-        return {
+        const result: SyncResult = {
           success: true,
           provider,
           action: 'download',
           mergedPayload: remote.payload,
+          remoteFile: remote.remoteFile,
+          ...(committed ? { mergedPayloadApplied: true } : {}),
         };
+        this.emit({ type: 'SYNC_COMPLETED', provider, result });
+        return result;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         this.state.syncState = 'ERROR';

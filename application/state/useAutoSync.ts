@@ -197,8 +197,8 @@ export const useAutoSync = (config: AutoSyncConfig) => {
     tRef.current = t;
   }, [t]);
   const sync = useCloudSync();
-  const convergentSyncPaused = sync.convergentSyncConfig.initialized
-    && !sync.convergentSyncConfig.enabled;
+  const convergentSyncPaused = !(typeof window !== 'undefined' && (window as any).__netcattyMobileMode)
+    && sync.convergentSyncConfig.initialized && !sync.convergentSyncConfig.enabled;
   const { onApplyPayload, onApplyConvergentPayload } = config;
   const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastSyncedDataRef = useRef<string>('');
@@ -347,7 +347,8 @@ export const useAutoSync = (config: AutoSyncConfig) => {
     // This closes the small window between a Settings toggle and React
     // committing the subscription update in this hook instance.
     const currentConvergentConfig = getConvergentSyncLocalConfig();
-    if (currentConvergentConfig.initialized && !currentConvergentConfig.enabled) {
+    if (!(typeof window !== 'undefined' && (window as any).__netcattyMobileMode)
+        && currentConvergentConfig.initialized && !currentConvergentConfig.enabled) {
       return false;
     }
     const trigger: SyncTrigger = options?.trigger ?? 'auto';
@@ -359,6 +360,7 @@ export const useAutoSync = (config: AutoSyncConfig) => {
       return false;
     }
 
+    if (isSyncRunningRef.current) return false;
     isSyncRunningRef.current = true;
     try {
       // Get fresh state directly from CloudSyncManager singleton
@@ -442,9 +444,11 @@ export const useAutoSync = (config: AutoSyncConfig) => {
 
       const payload = await buildPayload();
       const dataHash = getSyncPayloadDataHash(payload);
+      const isMobilePullOnly = typeof window !== 'undefined' && Boolean((window as any).__netcattyMobileMode);
       const encryptedCredentialPaths = findSyncPayloadEncryptedCredentialPaths(payload);
       if (
-        encryptedCredentialPaths.length > 0
+        !isMobilePullOnly
+        && encryptedCredentialPaths.length > 0
         && options?.conflictActionOverride !== 'download-remote'
       ) {
         console.warn('[AutoSync] Blocked: encrypted credential placeholders found at:', encryptedCredentialPaths.join(', '));
@@ -463,7 +467,8 @@ export const useAutoSync = (config: AutoSyncConfig) => {
       // let auto-sync run, trusting this guard to refuse if local is
       // truly empty rather than letting an empty state clobber remote.
       if (
-        !hasMeaningfulCloudSyncData(payload)
+        !isMobilePullOnly
+        && !hasMeaningfulCloudSyncData(payload)
         && options?.conflictActionOverride !== 'download-remote'
         && options?.allowEmptyConvergentSync !== true
       ) {
@@ -503,7 +508,7 @@ export const useAutoSync = (config: AutoSyncConfig) => {
           if (!allProvidersSynced) {
             console.warn('[AutoSync] Remote payload applied locally, but not every provider synced; leaving next auto-sync enabled for retry.');
           }
-          break; // All providers share the same merged payload
+          if (!isMobilePullOnly) break; // Desktop providers share one merged payload
         }
       }
 
@@ -605,7 +610,8 @@ export const useAutoSync = (config: AutoSyncConfig) => {
 
   const refreshPendingLocalSync = useCallback(async (isCurrent = () => true) => {
     if (
-      !enabled
+      (typeof window !== 'undefined' && (window as any).__netcattyMobileMode)
+      || !enabled
       || convergentSyncPaused
       || !sync.hasAnyConnectedProvider
       || !sync.isUnlocked
@@ -653,7 +659,8 @@ export const useAutoSync = (config: AutoSyncConfig) => {
       return;
     }
     const currentConvergentConfig = getConvergentSyncLocalConfig();
-    if (currentConvergentConfig.initialized && !currentConvergentConfig.enabled) {
+    if (!(typeof window !== 'undefined' && (window as any).__netcattyMobileMode)
+        && currentConvergentConfig.initialized && !currentConvergentConfig.enabled) {
       return;
     }
     if (checkRemoteInFlightRef.current) {
@@ -707,6 +714,12 @@ export const useAutoSync = (config: AutoSyncConfig) => {
       return userAction;
     };
     try {
+      if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+        // Always inspect/download on mobile, even if the old anchor matches
+        // or the local vault is empty. Never enter legacy push/migration paths.
+        startupConsistent = await syncNowRef.current({ trigger: 'manual', notifyOnFailure });
+        return;
+      }
       if (currentConvergentConfig.initialized && currentConvergentConfig.enabled) {
         // A v2 remote check must join the provider replicas through the CRDT
         // runtime. Inspecting the materialized v1 snapshot here would discard
@@ -807,10 +820,13 @@ export const useAutoSync = (config: AutoSyncConfig) => {
         return;
       }
 
-      const conflictAction = resolveCloudSyncConflictAction(state.syncStrategy, {
-        hasConflict: inspection.remoteChanged || isPreserveDeletionsStrategy(state.syncStrategy),
-        hasRemoteFile: Boolean(inspection.remoteFile),
-      });
+      const isMobilePullOnly = typeof window !== 'undefined' && Boolean((window as any).__netcattyMobileMode);
+      const conflictAction = isMobilePullOnly
+        ? 'download-remote'
+        : resolveCloudSyncConflictAction(state.syncStrategy, {
+            hasConflict: inspection.remoteChanged || isPreserveDeletionsStrategy(state.syncStrategy),
+            hasRemoteFile: Boolean(inspection.remoteFile),
+          });
 
       if (conflictAction === 'download-remote') {
         // Apply remote FIRST; only commit anchor/base after the UI-side
@@ -821,6 +837,12 @@ export const useAutoSync = (config: AutoSyncConfig) => {
           recordDownload: true,
         });
         startupConsistent = true;
+        if (isMobilePullOnly) {
+          skipNextSyncHashRef.current = getSyncPayloadDataHash(remotePayload);
+          markCurrentDataSynced = true;
+          notify.success(tRef.current('sync.autoSync.syncedMessage'), tRef.current('sync.autoSync.syncedTitle'));
+          return;
+        }
         markCurrentDataSynced = false;
         const roundTripResults = await manager.syncAllProviders(remotePayload, {
           conflictActionOverride: 'upload-local',
@@ -1056,6 +1078,12 @@ export const useAutoSync = (config: AutoSyncConfig) => {
 
     // Debounce first, then build the expensive full-data hash. This keeps
     // rapid edit bursts from serializing the whole vault on every keystroke.
+    // On mobile pull-only mode, local edits are never uploaded to cloud.
+    if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+      return () => {
+        cancelled = true;
+      };
+    }
     syncTimeoutRef.current = setTimeout(() => {
       syncTimeoutRef.current = null;
       void (async () => {
@@ -1146,6 +1174,17 @@ export const useAutoSync = (config: AutoSyncConfig) => {
     convergentSyncPaused,
     syncableSettingsStorageVersion,
   ]);
+
+  // Periodic mobile pulls must not depend on local edits or pending hashes.
+  useEffect(() => {
+    if (!(typeof window !== 'undefined' && (window as any).__netcattyMobileMode)
+        || !enabled || !sync.autoSyncEnabled || !sync.isUnlocked
+        || !sync.hasAnyConnectedProvider || config.startupReady === false) return;
+    const timer = setInterval(() => { void syncNowRef.current(); },
+      Math.max(1, sync.autoSyncInterval) * 60_000);
+    return () => clearInterval(timer);
+  }, [enabled, sync.autoSyncEnabled, sync.autoSyncInterval, sync.isUnlocked,
+      sync.hasAnyConnectedProvider, config.startupReady]);
 
   // Reflect unsynced local edits in the top-bar cloud indicator.
   useEffect(() => {

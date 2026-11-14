@@ -9,17 +9,21 @@
  * Enforces strict mobile safety rules:
  * 1. Cloud Sync is strictly PULL-ONLY (read-only download/merge from Gist/WebDAV/S3;
  *    never uploads or overwrites remote vaults).
- * 2. SFTP is strictly PULL-ONLY on remote hosts (browse, read, download to local Android
- *    sandbox; remote write/delete/mkdir/upload operations are safely blocked).
+ * 2. SFTP supports explicit user-initiated bidirectional remote file operations.
  */
 
 interface AndroidNativeBridge {
   getDeviceSysInfo(): string;
   vibrateShort(): void;
   openExternalUrl(url: string): void;
+  openExternal(url: string): void;
+  requestOpenFilePicker(callbackId: string): void;
   setStatusBarColorHex(hexColor: string): void;
   copyToClipboard(text: string): void;
   readClipboard(): string;
+  credentialsAvailable(): boolean;
+  credentialsEncrypt(plaintext: string): string;
+  credentialsDecrypt(ciphertext: string): string;
 
   // SSH / Local Shell / TCP Sessions
   connectSshSession(reqId: string, jsonConfig: string): void;
@@ -30,12 +34,24 @@ interface AndroidNativeBridge {
   connectTcpSession(reqId: string, sessionId: string, host: string, port: number): void;
   closeSession(sessionId: string): void;
 
-  // SFTP (Pull-Only on Remote)
+  // SFTP Operations
   sftpOpenSession(reqId: string, sftpId: string, sourceSessionId: string, sshConfigJson: string): void;
   sftpList(reqId: string, sftpId: string, remotePath: string): void;
   sftpStat(reqId: string, sftpId: string, remotePath: string, followLinks: boolean): void;
   sftpHomeAndRealpath(reqId: string, sftpId: string, remotePath: string): void;
   sftpReadFile(reqId: string, sftpId: string, remotePath: string, asBase64: boolean): void;
+  sftpWriteFile(reqId: string, sftpId: string, remotePath: string, contentOrB64: string, isBase64: boolean): void;
+  sftpMkdir(reqId: string, sftpId: string, remotePath: string): void;
+  sftpDelete(reqId: string, sftpId: string, remotePath: string): void;
+  sftpRename(reqId: string, sftpId: string, oldPath: string, newPath: string): void;
+  sftpChmod(reqId: string, sftpId: string, remotePath: string, modeOctal: string): void;
+  sftpStreamUploadFromLocal(
+    reqId: string,
+    transferId: string,
+    sftpId: string,
+    localPath: string,
+    remotePath: string,
+  ): void;
   sftpStreamDownloadToLocal(
     reqId: string,
     transferId: string,
@@ -110,6 +126,13 @@ declare global {
   }
 }
 
+function shellQuote(value: string): string {
+  if (value.includes('\0')) throw new Error('NUL is not a valid shell argument');
+  return "'" + value.replace(/'/g, "'\\''") + "'";
+}
+
+async function unsupportedMobile(): Promise<never> { throw new Error('Unsupported on Android'); }
+
 function getNative(): AndroidNativeBridge | null {
   return typeof window !== 'undefined' && window.NativeBridge ? window.NativeBridge : null;
 }
@@ -156,6 +179,267 @@ function arrayBufferToB64(buffer: ArrayBuffer): string {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
   }
   return btoa(binary);
+}
+
+// ============================================================================
+// Pure WebCrypto Helpers: RFC 6238 TOTP & AWS Signature V4 (S3 Pull-Only)
+// ============================================================================
+const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+function decodeBase32Bytes(input: string): Uint8Array | null {
+  const cleaned = String(input || '')
+    .replace(/=+$/g, '')
+    .replace(/\s+/g, '')
+    .toUpperCase();
+  if (!cleaned || /[^A-Z2-7]/.test(cleaned)) return null;
+  let bits = 0;
+  let value = 0;
+  const out: number[] = [];
+  for (let i = 0; i < cleaned.length; i++) {
+    value = (value << 5) | BASE32_ALPHABET.indexOf(cleaned[i]);
+    bits += 5;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push((value >>> bits) & 0xff);
+    }
+  }
+  return new Uint8Array(out);
+}
+
+function encodeBase32Bytes(bytes: Uint8Array): string {
+  let bits = 0;
+  let value = 0;
+  let output = '';
+  for (let i = 0; i < bytes.length; i++) {
+    value = (value << 8) | bytes[i];
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      output += BASE32_ALPHABET[(value >>> bits) & 31];
+    }
+  }
+  if (bits > 0) output += BASE32_ALPHABET[(value << (5 - bits)) & 31];
+  return output;
+}
+
+async function previewTotpWebCrypto(payload: any): Promise<any> {
+  const text = String(typeof payload?.text === 'string' ? payload.text : payload?.uri || '').trim();
+  if (!text) return { ok: false, error: 'empty' };
+  if (/^otpauth-migration:/i.test(text)) return { ok: false, error: 'migration' };
+
+  let secretBytes: Uint8Array | null = null;
+  let algorithm: 'SHA1' | 'SHA256' | 'SHA512' = 'SHA1';
+  let digits = 6;
+  let period = 30;
+  let issuer = '';
+  let label = '';
+
+  if (/^otpauth:/i.test(text)) {
+    let u: URL;
+    try {
+      u = new URL(text);
+    } catch {
+      return { ok: false, error: 'invalid-uri' };
+    }
+    const type = (u.hostname || '').toLowerCase();
+    if (!type) return { ok: false, error: 'invalid-uri' };
+    if (type === 'hotp') return { ok: false, error: 'hotp' };
+    if (type !== 'totp') return { ok: false, error: 'unsupported-type' };
+    const secretParam = u.searchParams.get('secret') || '';
+    if (!secretParam.trim()) return { ok: false, error: 'missing-secret' };
+    secretBytes = decodeBase32Bytes(secretParam);
+    if (!secretBytes || (secretBytes.length < 10 || secretBytes.length > 128)) return { ok: false, error: 'invalid-secret' };
+    const algParam = String(u.searchParams.get('algorithm') || 'SHA1').replace(/-/g, '').toUpperCase();
+    if (algParam === 'SHA1' || algParam === 'SHA256' || algParam === 'SHA512') {
+      algorithm = algParam;
+    } else {
+      return { ok: false, error: 'invalid-algorithm' };
+    }
+    const dText = u.searchParams.get('digits');
+    digits = dText == null || !dText.trim() ? 6 : Number(dText);
+    if (!Number.isInteger(digits) || digits < 6 || digits > 8) return { ok: false, error: 'invalid-digits' };
+    const pText = u.searchParams.get('period');
+    period = pText == null || !pText.trim() ? 30 : Number(pText);
+    if (!Number.isInteger(period) || period < 1 || period > 300) return { ok: false, error: 'invalid-period' };
+    let rawPath: string;
+    try { rawPath = decodeURIComponent(u.pathname.replace(/^\//, '')).trim(); }
+    catch { return { ok: false, error: 'invalid-uri' }; }
+    issuer = (u.searchParams.get('issuer') || '').trim();
+    label = rawPath;
+    if (!issuer && rawPath.includes(':')) {
+      const idx = rawPath.indexOf(':');
+      issuer = rawPath.slice(0, idx).trim();
+      label = rawPath.slice(idx + 1).trim();
+    } else if (issuer && rawPath.toLowerCase().startsWith(`${issuer.toLowerCase()}:`)) {
+      label = rawPath.slice(issuer.length + 1).trim();
+    }
+  } else {
+    secretBytes = decodeBase32Bytes(text);
+    if (!secretBytes || (secretBytes.length < 10 || secretBytes.length > 128)) return { ok: false, error: 'invalid-secret' };
+  }
+
+  const now = Date.now();
+  const periodMs = period * 1000;
+  const into = now % periodMs;
+  const remainingMs = into === 0 ? periodMs : periodMs - into;
+  const secondsRemaining = Math.ceil(remainingMs / 1000);
+  const counter = Math.floor(now / 1000 / period);
+  const msg = new Uint8Array(8);
+  let c = counter;
+  for (let i = 7; i >= 0; i--) {
+    msg[i] = c & 0xff;
+    c = Math.floor(c / 256);
+  }
+
+  const webAlgo = algorithm === 'SHA256' ? 'SHA-256' : algorithm === 'SHA512' ? 'SHA-512' : 'SHA-1';
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw',
+    secretBytes.buffer.slice(secretBytes.byteOffset, secretBytes.byteOffset + secretBytes.byteLength) as ArrayBuffer,
+    { name: 'HMAC', hash: webAlgo },
+    false,
+    ['sign'],
+  );
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', cryptoKey, msg));
+  const offset = sig[sig.length - 1] & 0x0f;
+  const binary =
+    ((sig[offset] & 0x7f) << 24) |
+    ((sig[offset + 1] & 0xff) << 16) |
+    ((sig[offset + 2] & 0xff) << 8) |
+    (sig[offset + 3] & 0xff);
+  const code = String(binary % 10 ** digits).padStart(digits, '0');
+
+  const account = label || issuer || 'TOTP';
+  const pathLabel = issuer && label && !label.startsWith(`${issuer}:`) ? `${issuer}:${label}` : account;
+  const params = new URLSearchParams();
+  params.set('secret', encodeBase32Bytes(secretBytes));
+  params.set('algorithm', algorithm);
+  params.set('digits', String(digits));
+  params.set('period', String(period));
+  if (issuer) params.set('issuer', issuer);
+  const uri = `otpauth://totp/${encodeURIComponent(pathLabel)}?${params.toString()}`;
+
+  return {
+    ok: true,
+    uri,
+    code,
+    secondsRemaining,
+    period,
+    algorithm,
+    digits,
+    issuer,
+    label,
+  };
+}
+
+function toHex(bytes: Uint8Array): string {
+  let out = '';
+  for (let i = 0; i < bytes.length; i++) {
+    out += bytes[i].toString(16).padStart(2, '0');
+  }
+  return out;
+}
+
+async function sha256Hex(data: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(data));
+  return toHex(new Uint8Array(digest));
+}
+
+async function hmacSha256(key: ArrayBuffer | Uint8Array, msg: string): Promise<ArrayBuffer> {
+  const rawKey =
+    key instanceof Uint8Array
+      ? (key.buffer.slice(key.byteOffset, key.byteOffset + key.byteLength) as ArrayBuffer)
+      : key;
+  const cryptoKey = await crypto.subtle.importKey('raw', rawKey, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return crypto.subtle.sign('HMAC', cryptoKey, new TextEncoder().encode(msg));
+}
+
+function encodeRfc3986(str: string): string {
+  return encodeURIComponent(str).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
+async function buildAwsSigV4SignedRequest(
+  config: any,
+  method: 'GET' | 'HEAD',
+  objectKey: string,
+): Promise<{ url: string; headers: Record<string, string> }> {
+  const rawEndpoint = String(config.endpoint || '').trim();
+  const normalizedEndpoint = /^https?:\/\//i.test(rawEndpoint) ? rawEndpoint : `https://${rawEndpoint}`;
+  const baseUrl = new URL(normalizedEndpoint);
+  const region = String(config.region || 'us-east-1').trim() || 'us-east-1';
+  const bucket = String(config.bucket || '').trim();
+  const forcePathStyle = config.forcePathStyle !== false;
+
+  const basePath = baseUrl.pathname.replace(/\/+$/, '');
+  const encodedKey = objectKey
+    .split('/')
+    .map(encodeRfc3986)
+    .join('/');
+
+  let targetHost = baseUrl.host;
+  let canonicalUri = '/';
+  if (forcePathStyle) {
+    canonicalUri = `${basePath}/${encodeRfc3986(bucket)}/${encodedKey}`;
+  } else {
+    targetHost = `${bucket}.${baseUrl.host}`;
+    canonicalUri = `${basePath}/${encodedKey}`;
+  }
+  // URL/HTTP clients normalize dot segments: reject rather than sign a different key.
+  if (objectKey.split('/').some((part) => part === '.' || part === '..')) throw new Error('S3 dot-segment keys unsupported on Android');
+  if (baseUrl.search || baseUrl.hash || baseUrl.username || baseUrl.password) throw new Error('S3 endpoint must not contain credentials, query or fragment');
+  const finalUrl = `${baseUrl.protocol}//${targetHost}${canonicalUri}`;
+
+  const now = new Date();
+  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, '');
+  const dateStamp = amzDate.slice(0, 8);
+  const payloadHash = await sha256Hex('');
+
+  const signHeaders: Record<string, string> = {
+    host: targetHost,
+    'x-amz-content-sha256': payloadHash,
+    'x-amz-date': amzDate,
+  };
+  if (config.sessionToken) {
+    signHeaders['x-amz-security-token'] = String(config.sessionToken).trim();
+  }
+  const sortedKeys = Object.keys(signHeaders).sort();
+  const canonicalHeaders = sortedKeys.map((k) => `${k}:${signHeaders[k].trim()}\n`).join('');
+  const signedHeaders = sortedKeys.join(';');
+
+  const canonicalRequest = [
+    method,
+    canonicalUri,
+    '',
+    canonicalHeaders,
+    signedHeaders,
+    payloadHash,
+  ].join('\n');
+
+  const credentialScope = `${dateStamp}/${region}/s3/aws4_request`;
+  const stringToSign = [
+    'AWS4-HMAC-SHA256',
+    amzDate,
+    credentialScope,
+    await sha256Hex(canonicalRequest),
+  ].join('\n');
+
+  const kSecret = new TextEncoder().encode(`AWS4${String(config.secretAccessKey || '')}`);
+  const kDate = await hmacSha256(kSecret, dateStamp);
+  const kRegion = await hmacSha256(kDate, region);
+  const kService = await hmacSha256(kRegion, 's3');
+  const kSigning = await hmacSha256(kService, 'aws4_request');
+  const signature = toHex(new Uint8Array(await hmacSha256(kSigning, stringToSign)));
+
+  const authorization = `AWS4-HMAC-SHA256 Credential=${String(config.accessKeyId || '').trim()}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+  const outHeaders: Record<string, string> = {
+    Authorization: authorization,
+    'x-amz-date': amzDate,
+    'x-amz-content-sha256': payloadHash,
+  };
+  if (config.sessionToken) {
+    outHeaders['x-amz-security-token'] = String(config.sessionToken).trim();
+  }
+  return { url: finalUrl, headers: outHeaders };
 }
 
 let reqCounter = 1;
@@ -206,23 +490,55 @@ export function installAndroidBridgePolyfill(): void {
   const globalSftpTransferListeners = new Set<(payload: any) => void>();
   const portForwardStatusListeners = new Map<string, Set<(status: any, error?: string) => void>>();
   const portForwardRuntimeListeners = new Set<(payload: any) => void>();
-  const settingsChangedListeners = new Set<(payload: { key: string; value: string | null }) => void>();
+  const settingsChangedListeners = new Set<(payload: { key: string; value: unknown }) => void>();
   const aiStreamDataListeners = new Map<string, Set<(data: string) => void>>();
   const aiStreamEndListeners = new Map<string, Set<() => void>>();
   const aiStreamErrorListeners = new Map<string, Set<(err: string) => void>>();
   const pasteWriteListeners = new Set<(payload: any) => void>();
 
+  const sftpLeases = new Map<string, Set<string>>();
+  const deferredSftpClose = new Set<string>();
+
+  const sftpProgressCallbacks = new Map<string, (transferred: number, totalBytes: number, speed: number) => void>();
+  const pendingFilePickers = new Map<string, (res: { canceled: boolean; filePath?: string; fileName?: string; error?: string }) => void>();
+  const editorOpenTabListeners = new Set<(snapshot: any) => void>();
+
   // Per-session UTF-8 streaming decoder so split multi-byte sequences never corrupt
   const sessionDecoders = new Map<string, TextDecoder>();
+
+  // Install global Android hardware back-button handler
+  (window as any).__netcattyHandleBackPress = (): boolean => {
+    try {
+      // 1. Close any open Radix Dialog / Popover / ContextMenu / Sheet via Escape key
+      const openLayer = document.querySelector(
+        '[role="dialog"][data-state="open"], [data-radix-popper-content-wrapper], [data-state="open"][role="menu"]',
+      );
+      if (openLayer) {
+        document.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }),
+        );
+        return true;
+      }
+      // 2. Delegate to AppView back handler (closes mobile settings -> switches from terminal/sftp to vault)
+      if (window.__handleAndroidBack && window.__handleAndroidBack !== (window as any).__netcattyHandleBackPress) {
+        if (window.__handleAndroidBack()) return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  };
 
   function callNativeAsync<T = any>(
     invoke: (reqId: string) => void,
     timeoutMs = 30000,
+    onTimeout?: () => void,
   ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const reqId = nextReqId('async');
       const timer = window.setTimeout(() => {
         pendingAsync.delete(reqId);
+        try { onTimeout?.(); } catch { /* still settle timeout */ }
         reject(new Error(`Native operation timed out (${timeoutMs}ms)`));
       }, timeoutMs);
       pendingAsync.set(reqId, { resolve, reject, timer });
@@ -279,7 +595,7 @@ export function installAndroidBridgePolyfill(): void {
       if (pending) {
         window.clearTimeout(pending.timer);
         pendingAsync.delete(reqId);
-        if (payload.ok === false && payload.error && payload.status === undefined && payload.success === undefined) {
+        if ((payload.ok === false || payload.success === false) && payload.error && payload.status === undefined) {
           pending.reject(new Error(payload.error));
         } else {
           pending.resolve(payload);
@@ -349,9 +665,57 @@ export function installAndroidBridgePolyfill(): void {
     }
 
     if (eventType === 'sftp_transfer_event') {
+      const tid = payload?.transferId;
+      if (tid && payload?.type === 'progress' && sftpProgressCallbacks.has(tid)) {
+        try {
+          sftpProgressCallbacks.get(tid)!(
+            Number(payload.transferred || 0),
+            Number(payload.totalBytes || 0),
+            Number(payload.speed || 0),
+          );
+        } catch {}
+      }
+      if (tid && (payload?.type === 'completed' || payload?.type === 'failed' || payload?.type === 'cancelled')) {
+        sftpProgressCallbacks.delete(tid);
+      }
       globalSftpTransferListeners.forEach((cb) => {
         try {
           cb(payload);
+        } catch {}
+      });
+      return;
+    }
+
+    if (eventType === 'dialog:open-file-result') {
+      const cbId = payload?.callbackId;
+      if (cbId && pendingFilePickers.has(cbId)) {
+        const resolver = pendingFilePickers.get(cbId)!;
+        pendingFilePickers.delete(cbId);
+        resolver({
+          canceled: Boolean(payload.canceled),
+          filePath: payload.filePath,
+          fileName: payload.fileName,
+          error: payload.error,
+        });
+      }
+      return;
+    }
+
+    if (eventType === 'port_forward_runtime') {
+      const tunnels = Array.isArray(payload?.tunnels) ? payload.tunnels : [];
+      const snapshot = {
+        revision: Date.now(),
+        tunnels: tunnels.map((t: any) => ({
+          ...t,
+          ruleId: t.ruleId || t.tunnelId,
+          ownerCount: 1,
+          startedAt: Date.now(),
+          updatedAt: Date.now(),
+        })),
+      };
+      portForwardRuntimeListeners.forEach((cb) => {
+        try {
+          cb({ type: 'SnapshotReplaced', snapshot });
         } catch {}
       });
       return;
@@ -509,7 +873,7 @@ export function installAndroidBridgePolyfill(): void {
     let outUrl = url;
     if (providerId) {
       const provider = cachedAiProviders.find((p) => p.id === providerId);
-      const rawKey = provider?.apiKey ? String(provider.apiKey).replace(/^enc:v1:/, '') : '';
+      const rawKey = provider?.apiKey ? String(provider.apiKey) : '';
       if (rawKey) {
         for (const k of Object.keys(outHeaders)) {
           if (typeof outHeaders[k] === 'string') {
@@ -521,6 +885,7 @@ export function installAndroidBridgePolyfill(): void {
         }
       }
     }
+    if (outUrl.includes('__IPC_SECURED__') || Object.values(outHeaders).some(value => value.includes('__IPC_SECURED__'))) throw new Error('AI credential unavailable; sync providers first');
     return { url: outUrl, headers: outHeaders };
   }
 
@@ -559,7 +924,8 @@ export function installAndroidBridgePolyfill(): void {
   }
 
   // Build the complete `window.netcatty` bridge implementation
-  const bridge: NetcattyBridge = {
+  // Legacy renderer aliases may coexist; every declared desktop method remains checked.
+  const bridge: NetcattyBridge & Record<string, unknown> = {
     // ── SSH / Terminal Sessions ──
     startSSHSession: async (options: NetcattySSHOptions): Promise<string> => {
       const native = getNative();
@@ -608,9 +974,9 @@ export function installAndroidBridgePolyfill(): void {
       return sessionId;
     },
 
-    cancelTestConnection: async () => {},
+    cancelTestConnection: unsupportedMobile,
 
-    startTelnetSession: async (options: TelnetConnectOptions): Promise<string> => {
+    startTelnetSession: async (options): Promise<string> => {
       const native = getNative();
       const sessionId = options.sessionId || `telnet-${Date.now()}`;
       if (!native) throw new Error('NativeBridge unavailable');
@@ -625,16 +991,11 @@ export function installAndroidBridgePolyfill(): void {
       });
     },
 
-    startMoshSession: async (options: MoshConnectOptions): Promise<string> => {
-      // Fallback Mosh to standard SSHv2 PTY on Android
-      return bridge.startSSHSession(options as unknown as NetcattySSHOptions);
-    },
+    startMoshSession: unsupportedMobile,
 
-    startEtSession: async (options: EtConnectOptions): Promise<string> => {
-      return bridge.startSSHSession(options as unknown as NetcattySSHOptions);
-    },
+    startEtSession: unsupportedMobile,
 
-    startLocalSession: async (options?: LocalConnectOptions): Promise<string> => {
+    startLocalSession: async (options): Promise<string> => {
       const native = getNative();
       const sessionId = options?.sessionId || `local-${Date.now()}`;
       if (!native) throw new Error('NativeBridge unavailable');
@@ -655,11 +1016,7 @@ export function installAndroidBridgePolyfill(): void {
 
     listSerialPorts: async () => [],
 
-    getDefaultShell: async () => ({
-      path: '/system/bin/sh',
-      name: 'Android Shell (sh)',
-      available: true,
-    }),
+    getDefaultShell: async () => '/system/bin/sh',
 
     discoverShells: async () => [
       { id: 'sh', name: 'Android POSIX sh', path: '/system/bin/sh', args: ['-i'] },
@@ -667,9 +1024,9 @@ export function installAndroidBridgePolyfill(): void {
 
     validatePath: async (path: string) => {
       const native = getNative();
-      if (!native) return { valid: true, exists: true };
-      const statStr = native.statLocalFileSync(path);
-      return { valid: Boolean(statStr), exists: Boolean(statStr) };
+      const statStr = native?.statLocalFileSync(path);
+      const stat = statStr ? JSON.parse(statStr) : null;
+      return { exists: Boolean(stat), isFile: stat?.type === 'file', isDirectory: stat?.type === 'directory', isExecutable: false };
     },
 
     writeToSession: (sessionId: string, data: string, options?: any) => {
@@ -741,10 +1098,10 @@ export function installAndroidBridgePolyfill(): void {
 
     clearSessionPtyBuffer: () => {},
     setSessionFlowPaused: () => {},
-    setSessionFlowPausedAndWait: async () => ({ success: true }),
-    acquireSessionFlowPauseLease: async () => ({ success: true, leaseId: 'lease-1', paused: true }),
-    waitSessionFlowPauseLease: async () => ({ success: true }),
-    releaseSessionFlowPauseLease: async () => ({ success: true, paused: false }),
+    setSessionFlowPausedAndWait: unsupportedMobile,
+    acquireSessionFlowPauseLease: unsupportedMobile,
+    waitSessionFlowPauseLease: unsupportedMobile,
+    releaseSessionFlowPauseLease: unsupportedMobile,
     onTerminalOutputDrainRequest: () => () => {},
     respondTerminalOutputDrain: () => {},
     notifyTerminalSessionDisplayReady: () => {},
@@ -759,7 +1116,7 @@ export function installAndroidBridgePolyfill(): void {
       }
     },
 
-    setSessionEncoding: async () => ({ ok: true }),
+    setSessionEncoding: async (_sessionId, encoding) => ({ ok: /^utf-?8$/i.test(encoding), encoding: 'utf-8' }),
 
     onSessionData: (sessionId: string, cb: (data: string, meta?: any) => void, options?: { replayBacklog?: boolean }) => {
       if (!dataListeners.has(sessionId)) {
@@ -810,7 +1167,7 @@ export function installAndroidBridgePolyfill(): void {
     onTelnetAutoLoginCancelled: () => () => {},
     onMoshSessionReady: () => () => {},
     onTelnetEchoMode: () => () => {},
-    getTelnetEchoMode: async () => ({ success: true, remoteEcho: true }),
+    getTelnetEchoMode: unsupportedMobile,
     onZmodemEvent: () => () => {},
     cancelZmodem: () => {},
     onZmodemOverwriteRequest: () => () => {},
@@ -823,17 +1180,17 @@ export function installAndroidBridgePolyfill(): void {
     },
     onKeyboardInteractive: () => () => {},
     onKeyboardInteractiveCancelled: () => () => {},
-    respondKeyboardInteractive: async () => ({ ok: true }),
+    respondKeyboardInteractive: unsupportedMobile,
     onHostKeyVerification: () => () => {},
-    respondHostKeyVerification: async () => ({ ok: true }),
+    respondHostKeyVerification: unsupportedMobile,
     onPassphraseRequest: () => () => {},
-    respondPassphrase: async () => ({ ok: true }),
-    respondPassphraseSkip: async () => ({ ok: true }),
+    respondPassphrase: unsupportedMobile,
+    respondPassphraseSkip: unsupportedMobile,
     onPassphraseTimeout: () => () => {},
     onPassphraseCancelled: () => () => {},
     onPassphraseAuthFailed: () => () => {},
     onFidoPromptRequest: () => () => {},
-    respondFidoPrompt: async () => ({ ok: true }),
+    respondFidoPrompt: unsupportedMobile,
     onFidoPromptTimeout: () => () => {},
     onFidoPromptCancelled: () => () => {},
 
@@ -903,7 +1260,7 @@ export function installAndroidBridgePolyfill(): void {
     },
 
     readRemoteHistory: async (sessionId: string, limit = 500) => {
-      const safeLimit = Math.min(2000, Math.max(50, limit));
+      const safeLimit = Number.isFinite(limit) ? Math.min(2000, Math.max(50, Math.floor(limit))) : 500;
       const cmd = `tail -n ${safeLimit} ~/.bash_history 2>/dev/null || tail -n ${safeLimit} ~/.zsh_history 2>/dev/null || true`;
       const res = await execOnSessionHelper(sessionId, cmd, 8000);
       return {
@@ -1031,27 +1388,37 @@ export function installAndroidBridgePolyfill(): void {
 
     checkSshAgent: async () => ({ available: false }),
     getDefaultKeys: async () => [],
-    readKnownHosts: async () => [],
+    readKnownHosts: async () => null,
 
     // ── Port Forwarding ──
-    startPortForward: async (options) => {
+    startPortForward: async (options: any) => {
       const native = getNative();
       if (!native) return { success: false, error: 'NativeBridge unavailable' };
       try {
+        const normalized = {
+          ...options,
+          hostname: options?.hostname || options?.host || options?.sshHost || '',
+          port: Number(options?.port || options?.sshPort || 22),
+          bindAddress: options?.bindAddress || options?.localHost || '127.0.0.1',
+          localPort: Number(options?.localPort ?? 8080),
+          remoteHost: options?.remoteHost || '127.0.0.1',
+          remotePort: Number(options?.remotePort ?? 80),
+        };
         const res = await callNativeAsync(
-          (reqId) => native.startSshPortForward(reqId, JSON.stringify(options)),
-          18000,
+          (reqId) => native.startSshPortForward(reqId, JSON.stringify(normalized)),
+          20000,
         );
         return {
           success: Boolean(res?.success),
           tunnelId: res?.tunnelId || options.tunnelId,
+          localPort: res?.localPort ?? normalized.localPort,
           error: res?.error,
-        };
+        } as any;
       } catch (err) {
         return {
           success: false,
           error: err instanceof Error ? err.message : String(err),
-        };
+        } as any;
       }
     },
 
@@ -1061,9 +1428,14 @@ export function installAndroidBridgePolyfill(): void {
     },
 
     getPortForwardStatus: async (tunnelId: string) => {
-      const list = await bridge.listPortForwards();
-      const found = list.find((t) => t.tunnelId === tunnelId);
-      return { status: found ? found.status : 'inactive' };
+      const list = (await bridge.listPortForwards?.()) || [];
+      const found = list.find((t: any) => t.tunnelId === tunnelId);
+      return {
+        tunnelId,
+        type: found?.type,
+        status: (found?.status || 'inactive') as 'connecting' | 'active' | 'error' | 'inactive',
+        error: found?.error,
+      };
     },
 
     listPortForwards: async () => {
@@ -1077,28 +1449,41 @@ export function installAndroidBridgePolyfill(): void {
     },
 
     getPortForwardSnapshot: async () => {
-      const tunnels = await bridge.listPortForwards();
+      const tunnels = (await bridge.listPortForwards?.()) || [];
       return {
         revision: Date.now(),
-        tunnels: tunnels.map((t) => ({
+        tunnels: tunnels.map((t: any) => ({
           ...t,
           ruleId: (t as any).ruleId || t.tunnelId,
           ownerCount: 1,
           startedAt: Date.now(),
           updatedAt: Date.now(),
         })),
-      };
+      } as any;
     },
 
+    subscribePortForward: async (tunnelId: string) => bridge.getPortForwardStatus!(tunnelId),
     subscribePortForwardRuntime: async () => bridge.getPortForwardSnapshot!(),
-    unsubscribePortForwardRuntime: async () => ({ success: true }),
+    unsubscribePortForwardRuntime: unsupportedMobile,
     stopAllPortForwards: async () => {
-      getNative()?.stopAllSshPortForwards();
-      return { stoppedCount: 0, totalCount: 0 };
+      const native = getNative();
+      if (!native) throw new Error('NativeBridge unavailable');
+      native.stopAllSshPortForwards();
     },
-    stopPortForwardByRuleId: async (ruleId: string) => {
-      getNative()?.stopSshPortForward(ruleId);
-      return { success: true };
+    stopPortForwardByRuleId: async (ruleOrPayload: any) => {
+      const ruleId = typeof ruleOrPayload === 'string' ? ruleOrPayload : String(ruleOrPayload?.ruleId || '');
+      const list = (await bridge.listPortForwards?.()) || [];
+      let stopped = 0;
+      for (const t of list) {
+        if ((t as any).ruleId === ruleId || t.tunnelId === ruleId) {
+          getNative()?.stopSshPortForward(t.tunnelId);
+          stopped += 1;
+        }
+      }
+      if (stopped === 0 && ruleId) {
+        getNative()?.stopSshPortForward(ruleId);
+      }
+      return { success: true, stopped, failed: 0, errors: [] } as any;
     },
     onPortForwardStatus: (tunnelId: string, cb) => {
       if (!portForwardStatusListeners.has(tunnelId)) {
@@ -1114,7 +1499,7 @@ export function installAndroidBridgePolyfill(): void {
       return () => portForwardRuntimeListeners.delete(cb);
     },
 
-    // ── SFTP Operations (Strictly PULL-ONLY on Remote Host) ──
+    // ── SFTP Operations (Bidirectional; independent of cloud restore policy) ──
     openSftp: async (options: NetcattySSHOptions): Promise<string> => {
       const native = getNative();
       if (!native) throw new Error('NativeBridge unavailable');
@@ -1235,30 +1620,46 @@ export function installAndroidBridgePolyfill(): void {
       return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
     },
 
-    // STRICT PULL-ONLY LOCK FOR REMOTE SFTP WRITES
-    writeSftp: async () => {
-      throw new Error('手机端 SFTP 已锁定为「只下拉不上传」只读模式，禁止修改远端服务器文件');
+    // SFTP is bidirectional; only cloud vault synchronization is pull-only.
+    writeSftp: async (sftpId, path, content) => {
+      const native = getNative();
+      if (!native) throw new Error('NativeBridge unavailable');
+      await callNativeAsync((id) => native.sftpWriteFile(id, sftpId, path, content, false));
     },
-    writeSftpBinary: async () => {
-      throw new Error('手机端 SFTP 已锁定为「只下拉不上传」只读模式，禁止上传或覆盖远端文件');
+    writeSftpBinary: async (sftpId, path, content) => {
+      const native = getNative();
+      if (!native) throw new Error('NativeBridge unavailable');
+      await callNativeAsync((id) => native.sftpWriteFile(id, sftpId, path, arrayBufferToB64(content), true));
     },
-    mkdirSftp: async () => {
-      throw new Error('手机端 SFTP 已锁定为「只下拉不上传」只读模式，禁止在远端创建目录');
+    mkdirSftp: async (sftpId, path) => {
+      const native = getNative();
+      if (!native) throw new Error('NativeBridge unavailable');
+      await callNativeAsync((id) => native.sftpMkdir(id, sftpId, path));
     },
-    deleteSftp: async () => {
-      throw new Error('手机端 SFTP 已锁定为「只下拉不上传」只读模式，禁止删除远端文件');
+    deleteSftp: async (sftpId, path) => {
+      const native = getNative();
+      if (!native) throw new Error('NativeBridge unavailable');
+      await callNativeAsync((id) => native.sftpDelete(id, sftpId, path));
     },
-    renameSftp: async () => {
-      throw new Error('手机端 SFTP 已锁定为「只下拉不上传」只读模式，禁止重命名远端文件');
+    renameSftp: async (sftpId, oldPath, newPath) => {
+      const native = getNative();
+      if (!native) throw new Error('NativeBridge unavailable');
+      await callNativeAsync((id) => native.sftpRename(id, sftpId, oldPath, newPath));
     },
-    chmodSftp: async () => {
-      throw new Error('手机端 SFTP 已锁定为「只下拉不上传」只读模式，禁止修改远端权限');
+    chmodSftp: async (sftpId, path, mode) => {
+      const native = getNative();
+      if (!native) throw new Error('NativeBridge unavailable');
+      if (!/^[0-7]{3,4}$/.test(mode)) throw new Error('Invalid octal permissions');
+      await callNativeAsync((id) => native.sftpChmod(id, sftpId, path, mode));
     },
     startCompressedUpload: async (options) => ({
       compressionId: options.compressionId,
       success: false,
-      error: '手机端 SFTP 已锁定为「只下拉不上传」只读模式，禁止向远端上传文件夹',
+      error: 'Compressed tar upload unavailable on Android; falling back to standard SFTP transfer',
     }),
+    cancelCompressedUpload: unsupportedMobile,
+    pauseCompressedUpload: async () => ({ success: false }),
+    resumeCompressedUpload: async () => ({ success: false }),
     checkCompressedUploadSupport: async () => ({
       supported: false,
       localTar: false,
@@ -1266,66 +1667,88 @@ export function installAndroidBridgePolyfill(): void {
     }),
 
     closeSftp: async (sftpId: string) => {
-      getNative()?.sftpCloseSession(sftpId);
+      const native = getNative();
+      if (!native) return { success: false };
+      const leaseCount = sftpLeases.get(sftpId)?.size || 0;
+      if (leaseCount) { deferredSftpClose.add(sftpId); return { success: true, deferred: true, leaseCount }; }
+      native.sftpCloseSession(sftpId);
       return { success: true };
     },
-    retainSftpTransferSession: async () => ({ success: true }),
-    releaseSftpTransferSession: async () => ({ success: true }),
-
-    startStreamTransfer: async (options) => {
-      // Strictly block any transfer where targetType === 'sftp' (upload to remote)
-      if (options.targetType === 'sftp') {
-        const errMsg = '手机端已锁定「只下拉不上传」保护策略：仅允许从远端服务器下载到本地，禁止上传覆盖远端';
-        queueMicrotask(() => {
-          globalSftpTransferListeners.forEach((cb) => {
-            try {
-              cb({
-                type: 'failed',
-                transferId: options.transferId,
-                direction: 'upload',
-                sourcePath: options.sourcePath,
-                targetPath: options.targetPath,
-                error: errMsg,
-                endedAt: Date.now(),
-              });
-            } catch {}
-          });
-        });
-        return { transferId: options.transferId, error: errMsg };
+    retainSftpTransferSession: async (sftpId, leaseId) => {
+      if (!getNative() || deferredSftpClose.has(sftpId)) return { success: false, reason: 'SFTP session unavailable or closing' };
+      if (!sftpLeases.has(sftpId)) sftpLeases.set(sftpId, new Set());
+      sftpLeases.get(sftpId)!.add(leaseId);
+      return { success: true };
+    },
+    releaseSftpTransferSession: async (sftpId, leaseId) => {
+      const leases = sftpLeases.get(sftpId);
+      leases?.delete(leaseId);
+      if (!leases?.size) {
+        sftpLeases.delete(sftpId);
+        if (deferredSftpClose.delete(sftpId)) getNative()?.sftpCloseSession(sftpId);
       }
+      return { success: true };
+    },
 
+    startStreamTransfer: async (
+      options: any,
+      onProgress?: (transferred: number, totalBytes: number, speed: number) => void,
+      onComplete?: () => void,
+      onError?: (error: string) => void,
+    ) => {
       const native = getNative();
-      if (!native || !options.sourceSftpId) {
-        return { transferId: options.transferId, error: 'SFTP source session unavailable' };
+      if (!native) {
+        return { transferId: options.transferId, error: 'NativeBridge unavailable' };
       }
-      const res = await callNativeAsync(
-        (reqId) =>
-          native.sftpStreamDownloadToLocal(
-            reqId,
-            options.transferId,
-            options.sourceSftpId!,
-            options.sourcePath,
-            options.targetPath,
-          ),
-        300000,
-      );
-      return {
-        transferId: options.transferId,
-        totalBytes: res?.totalBytes,
-        cancelled: res?.cancelled,
-        error: res?.error,
-      };
+      try {
+        const downloading = options.sourceType === 'sftp' && options.targetType === 'local';
+        const uploading = options.sourceType === 'local' && options.targetType === 'sftp';
+        if (!downloading && !uploading) return { transferId: options.transferId, error: 'Cross-server and local-to-local transfers are unsupported on Android' };
+
+        // Case 3: SFTP -> Local Download
+        if (!(downloading ? options.sourceSftpId : options.targetSftpId)) {
+          return { transferId: options.transferId, error: 'SFTP source session unavailable' };
+        }
+        if (typeof onProgress === 'function') sftpProgressCallbacks.set(options.transferId, onProgress);
+        const res = await callNativeAsync(
+          (reqId) => {
+            if (downloading) native.sftpStreamDownloadToLocal(reqId, options.transferId, options.sourceSftpId, options.sourcePath, options.targetPath);
+            else native.sftpStreamUploadFromLocal(reqId, options.transferId, options.targetSftpId, options.sourcePath, options.targetPath);
+          },
+          600000,
+          () => native.cancelSftpTransfer(options.transferId),
+        );
+        if (res?.error) {
+          onError?.(res.error);
+        } else if (!res?.cancelled) {
+          onComplete?.();
+        }
+        return {
+          transferId: options.transferId,
+          totalBytes: res?.totalBytes,
+          cancelled: res?.cancelled,
+          error: res?.error,
+        };
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        onError?.(error);
+        return { transferId: options.transferId, error };
+      } finally {
+        if (options?.transferId) {
+          sftpProgressCallbacks.delete(options.transferId);
+        }
+      }
     },
 
     cancelTransfer: async (transferId: string) => {
       getNative()?.cancelSftpTransfer(transferId);
     },
-    clearPendingTransferCancel: async () => ({ success: true }),
+    clearPendingTransferCancel: unsupportedMobile,
     pauseTransfer: async () => ({ success: false, reason: 'Not supported on mobile' }),
     resumeTransfer: async () => ({ success: false, reason: 'Not supported on mobile' }),
-    prioritizeTransfer: async () => ({ success: true }),
-    setGlobalTransferConcurrency: async (limit: number) => ({ success: true, limit }),
-    cleanupTransferArtifacts: async () => ({ success: true }),
+    prioritizeTransfer: unsupportedMobile,
+    setGlobalTransferConcurrency: unsupportedMobile,
+    cleanupTransferArtifacts: unsupportedMobile,
     onGlobalSftpTransferEvent: (cb) => {
       globalSftpTransferListeners.add(cb);
       return () => globalSftpTransferListeners.delete(cb);
@@ -1335,14 +1758,17 @@ export function installAndroidBridgePolyfill(): void {
       const native = getNative();
       if (!native) throw new Error('NativeBridge unavailable');
       const home = native.getHomeDirSync();
-      const targetPath = `${home}/Downloads/${fileName || remotePath.split('/').pop() || 'download.bin'}`;
+      const safeName = (fileName || remotePath.split('/').pop() || 'download.bin').split(/[\\/]/).pop() || 'download.bin';
+      if (safeName === '.' || safeName === '..') throw new Error('Invalid download filename');
+      const targetPath = `${home}/Downloads/${safeName}`;
       const tid = transferId || `dl-${Date.now()}`;
       const res = await callNativeAsync(
         (reqId) => native.sftpStreamDownloadToLocal(reqId, tid, sftpId, remotePath, targetPath),
         300000,
+        () => native.cancelSftpTransfer(tid),
       );
       if (res?.error) throw new Error(res.error);
-      return targetPath;
+      return { localPath: targetPath, cancelled: Boolean(res?.cancelled) };
     },
 
     // ── Local Sandbox Filesystem ──
@@ -1395,17 +1821,16 @@ export function installAndroidBridgePolyfill(): void {
     },
     writeLocalFile: async (path: string, content: ArrayBuffer) => {
       const native = getNative();
-      if (!native) return;
-      native.writeLocalFileB64(path, arrayBufferToB64(content));
+      if (!native || !native.writeLocalFileB64(path, arrayBufferToB64(content))) throw new Error('Local file write failed');
     },
     deleteLocalFile: async (path: string) => {
-      getNative()?.deleteLocalFile(path);
+      if (!getNative()?.deleteLocalFile(path)) throw new Error('Local filesystem operation failed');
     },
     renameLocalFile: async (oldPath: string, newPath: string) => {
-      getNative()?.renameLocalFile(oldPath, newPath);
+      if (!getNative()?.renameLocalFile(oldPath, newPath)) throw new Error('Local filesystem operation failed');
     },
     mkdirLocal: async (path: string) => {
-      getNative()?.mkdirLocal(path);
+      if (!getNative()?.mkdirLocal(path)) throw new Error('Local filesystem operation failed');
     },
     listLocalTree: async () => [],
     cancelLocalTreeScan: async () => {},
@@ -1413,12 +1838,12 @@ export function installAndroidBridgePolyfill(): void {
     // ── Cloud Sync (Strictly PULL-ONLY / Read-Only on Remote Cloud) ──
     cloudSyncSetSessionPassword: async (password: string) => {
       cloudSyncSessionPassword = password;
-      return { ok: true };
+      return true;
     },
     cloudSyncGetSessionPassword: async () => cloudSyncSessionPassword,
     cloudSyncClearSessionPassword: async () => {
       cloudSyncSessionPassword = null;
-      return { ok: true };
+      return true;
     },
     onCloudSyncSessionPasswordAvailable: () => () => {},
 
@@ -1426,8 +1851,8 @@ export function installAndroidBridgePolyfill(): void {
       const native = getNative();
       if (!native) throw new Error('NativeBridge unavailable');
       const body = new URLSearchParams({
-        client_id: options.clientId || '',
-        scope: options.scope || 'gist read:user',
+        client_id: options?.clientId || '',
+        scope: options?.scope || 'gist read:user',
       }).toString();
       const res = await callNativeAsync((reqId) =>
         native.httpFetchAsync(
@@ -1457,7 +1882,7 @@ export function installAndroidBridgePolyfill(): void {
       const native = getNative();
       if (!native) throw new Error('NativeBridge unavailable');
       const body = new URLSearchParams({
-        client_id: options.clientId || '',
+        client_id: options?.clientId || '',
         device_code: options.deviceCode,
         grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
       }).toString();
@@ -1488,7 +1913,7 @@ export function installAndroidBridgePolyfill(): void {
           options.rawUrl,
           'GET',
           JSON.stringify({
-            Authorization: `Bearer ${options.accessToken}`,
+            Authorization: 'Bearer ' + String(options.accessToken || ''),
             Accept: 'application/vnd.github.raw',
           }),
           '',
@@ -1500,12 +1925,45 @@ export function installAndroidBridgePolyfill(): void {
     },
 
     cloudSyncWebdavInitialize: async (config) => {
+      const native = getNative();
+      if (!native) throw new Error('NativeBridge unavailable');
+      const rawEndpoint = String(config.endpoint || '').trim();
+      const normalized = /^https?:\/\//i.test(rawEndpoint) ? rawEndpoint : `https://${rawEndpoint}`;
+      const endpoint = normalized.replace(/\/+$/, '');
+      const url = endpoint.endsWith('.json') ? endpoint : `${endpoint}/netcatty-vault.json`;
+      const headers: Record<string, string> = {
+        Depth: '0',
+        Accept: 'application/xml, text/xml, */*',
+      };
+      if (config.authType === 'token' && config.token) {
+        headers.Authorization = `Bearer ${config.token}`;
+      } else if (config.username || config.password) {
+        headers.Authorization = `Basic ${utf8ToB64(`${config.username || ''}:${config.password || ''}`)}`;
+      }
+      const res = await callNativeAsync((reqId) =>
+        native.httpFetchAsync(
+          reqId,
+          url,
+          'PROPFIND',
+          JSON.stringify(headers),
+          '',
+          Boolean(config.allowInsecure),
+        ),
+      );
+      if (res?.status === 401 || res?.status === 403) {
+        throw new Error(`WebDAV authentication failed (HTTP ${res.status})`);
+      }
+      if (!res?.status || (res.status >= 500 && res.status !== 501)) {
+        throw new Error(res?.error || `WebDAV connection failed (HTTP ${res?.status || 0})`);
+      }
       return { resourceId: '/netcatty-vault.json' };
     },
     cloudSyncWebdavDownload: async (config) => {
       const native = getNative();
       if (!native) throw new Error('NativeBridge unavailable');
-      const endpoint = String(config.endpoint || '').replace(/\/+$/, '');
+      const rawEndpoint = String(config.endpoint || '').trim();
+      const normalized = /^https?:\/\//i.test(rawEndpoint) ? rawEndpoint : `https://${rawEndpoint}`;
+      const endpoint = normalized.replace(/\/+$/, '');
       const url = endpoint.endsWith('.json') ? endpoint : `${endpoint}/netcatty-vault.json`;
       const headers: Record<string, string> = {
         Accept: 'application/json, text/plain, */*',
@@ -1539,18 +1997,44 @@ export function installAndroidBridgePolyfill(): void {
     },
 
     cloudSyncS3Initialize: async (config) => {
+      const native = getNative();
       const prefix = String(config.prefix || '').trim().replace(/^\/+|\/+$/g, '');
-      return { resourceId: prefix ? `${prefix}/netcatty-vault.json` : 'netcatty-vault.json' };
+      const key = prefix ? `${prefix}/netcatty-vault.json` : 'netcatty-vault.json';
+      if (!native) throw new Error('NativeBridge unavailable');
+      const signed = await buildAwsSigV4SignedRequest(config, 'HEAD', key);
+      const res = await callNativeAsync((reqId) =>
+        native.httpFetchAsync(
+          reqId,
+          signed.url,
+          'HEAD',
+          JSON.stringify(signed.headers),
+          '',
+          Boolean(config.allowInsecure),
+        ),
+      );
+      if (res?.status === 401 || res?.status === 403) {
+        throw new Error(`S3 access denied (HTTP ${res.status})`);
+      }
+      if (!res?.status || res.status >= 500) {
+        throw new Error(res?.error || `S3 connection failed (HTTP ${res?.status || 0})`);
+      }
+      return { resourceId: key };
     },
     cloudSyncS3Download: async (config) => {
       const native = getNative();
       if (!native) throw new Error('NativeBridge unavailable');
-      const endpoint = String(config.endpoint || '').replace(/\/+$/, '');
       const prefix = String(config.prefix || '').trim().replace(/^\/+|\/+$/g, '');
       const key = prefix ? `${prefix}/netcatty-vault.json` : 'netcatty-vault.json';
-      const url = `${endpoint}/${config.bucket}/${key}`;
+      const signed = await buildAwsSigV4SignedRequest(config, 'GET', key);
       const res = await callNativeAsync((reqId) =>
-        native.httpFetchAsync(reqId, url, 'GET', '{}', '', Boolean(config.allowInsecure)),
+        native.httpFetchAsync(
+          reqId,
+          signed.url,
+          'GET',
+          JSON.stringify(signed.headers),
+          '',
+          Boolean(config.allowInsecure),
+        ),
       );
       if (res?.status === 404) return { syncedFile: null };
       if (!res?.ok) throw new Error(`S3 pull failed: HTTP ${res?.status}`);
@@ -1629,7 +2113,8 @@ export function installAndroidBridgePolyfill(): void {
     },
 
     signalSystemProcess: async ({ sessionId, pid, signal = 'TERM' }) => {
-      const res = await execOnSessionHelper(sessionId, `kill -s ${signal} ${Number(pid)}`, 5000);
+      if (!['TERM', 'KILL', 'INT', 'HUP', 'QUIT', 'STOP', 'CONT', 'USR1', 'USR2'].includes(signal) || !Number.isSafeInteger(pid) || pid <= 1) return { success: false, error: 'Invalid process or signal' };
+      const res = await execOnSessionHelper(sessionId, `kill -s ${signal} ${pid}`, 5000);
       return { success: res.success && res.code === 0, code: res.code, error: res.stderr || res.error };
     },
 
@@ -1716,7 +2201,8 @@ export function installAndroidBridgePolyfill(): void {
 
     dockerAction: async ({ sessionId, containerId, action, runtime = 'docker' }) => {
       const bin = runtime === 'podman' ? 'podman' : 'docker';
-      const cmd = action === 'rm' ? `${bin} rm -f ${containerId}` : `${bin} ${action} ${containerId}`;
+      if (!['start', 'stop', 'restart', 'pause', 'unpause', 'rm'].includes(action) || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(containerId)) return { success: false, error: 'Unsupported container action or invalid ID' };
+      const cmd = action === 'rm' ? `${bin} rm -f -- ${shellQuote(containerId)}` : `${bin} ${action} -- ${shellQuote(containerId)}`;
       const res = await execOnSessionHelper(sessionId, cmd, 12000);
       return { success: res.success && res.code === 0, error: res.stderr || res.error };
     },
@@ -1775,9 +2261,260 @@ export function installAndroidBridgePolyfill(): void {
     },
 
     systemServiceAction: async ({ sessionId, unitName, action }) => {
-      const res = await execOnSessionHelper(sessionId, `systemctl ${action} ${unitName}`, 15000);
+      if (!['start', 'stop', 'restart', 'reload', 'enable', 'disable', 'reset-failed'].includes(action) || !/^[a-zA-Z0-9][a-zA-Z0-9_.@:\x5c-]*\.service$/.test(unitName)) return { success: false, error: 'Invalid service action or unit' };
+      const res = await execOnSessionHelper(sessionId, `systemctl ${action} -- ${shellQuote(unitName)}`, 15000);
       return { success: res.success && res.code === 0, error: res.stderr || res.error };
     },
+
+    listTmuxSessions: async (sessionId: string) => {
+      const sep = '<<<NC_SEP>>>';
+      const fmt = [
+        '#{session_id}',
+        '#{session_name}',
+        '#{session_windows}',
+        '#{session_attached}',
+        '#{session_created}',
+        '#{session_activity}',
+      ].join(sep);
+      const res = await execOnSessionHelper(
+        sessionId,
+        `tmux list-sessions -F '${fmt}' 2>/dev/null || true`,
+        8000,
+      );
+      if (!res.success) return { success: false, error: res.error, sessions: [] } as any;
+      const sessions = res.stdout
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const [id = '', name = '', windows = '1', attached = '0', created = '0', activity = '0'] =
+            line.split(sep);
+          return {
+            id,
+            name,
+            windows: Number(windows) || 1,
+            attached: Number(attached) || 0,
+            isAttached: Number(attached) > 0,
+            createdAt: (Number(created) || 0) * 1000,
+            lastActivityAt: (Number(activity) || 0) * 1000,
+          };
+        })
+        .filter((s) => Boolean(s.name));
+      return { success: true, sessions } as any;
+    },
+
+    createTmuxSession: async (options: any) => {
+      const sessionId = String(options?.sessionId || '');
+      const rawName = String(options?.name || 'main').replace(/[^a-zA-Z0-9_.-]/g, '_');
+      const res = await execOnSessionHelper(sessionId, `tmux new-session -d -s '${rawName}'`, 8000);
+      return { success: res.success && res.code === 0, name: rawName, error: res.stderr || res.error } as any;
+    },
+
+    listTmuxWindows: async (options: any) => {
+      const sessionId = String(options?.sessionId || '');
+      const target = String(options?.sessionName || options?.target || '');
+      const sep = '<<<NC_SEP>>>';
+      const fmt = [
+        '#{window_id}',
+        '#{window_index}',
+        '#{window_name}',
+        '#{window_active}',
+        '#{window_panes}',
+        '#{pane_current_command}',
+      ].join(sep);
+      const targetArg = target ? `-t '${target.replace(/'/g, "'\\''")}'` : '-a';
+      const res = await execOnSessionHelper(
+        sessionId,
+        `tmux list-windows ${targetArg} -F '${fmt}' 2>/dev/null || true`,
+        8000,
+      );
+      if (!res.success) return { success: false, error: res.error, windows: [] } as any;
+      const windows = res.stdout
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const [id = '', index = '0', name = '', active = '0', panes = '1', currentCommand = ''] =
+            line.split(sep);
+          return {
+            id,
+            index: Number(index) || 0,
+            name,
+            active: active === '1',
+            panes: Number(panes) || 1,
+            currentCommand,
+          };
+        });
+      return { success: true, windows } as any;
+    },
+
+    listTmuxPanes: async (options: any) => {
+      const sessionId = String(options?.sessionId || '');
+      const target = String(options?.target || options?.sessionName || '');
+      const sep = '<<<NC_SEP>>>';
+      const fmt = [
+        '#{pane_id}',
+        '#{pane_index}',
+        '#{pane_active}',
+        '#{pane_width}',
+        '#{pane_height}',
+        '#{pane_current_command}',
+        '#{pane_current_path}',
+        '#{pane_pid}',
+      ].join(sep);
+      const targetArg = target ? `-t '${target.replace(/'/g, "'\\''")}'` : '-a';
+      const res = await execOnSessionHelper(
+        sessionId,
+        `tmux list-panes ${targetArg} -F '${fmt}' 2>/dev/null || true`,
+        8000,
+      );
+      if (!res.success) return { success: false, error: res.error, panes: [] } as any;
+      const panes = res.stdout
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const [id = '', index = '0', active = '0', width = '80', height = '24', cmd = '', cwd = '', pid = '0'] =
+            line.split(sep);
+          return {
+            id,
+            index: Number(index) || 0,
+            active: active === '1',
+            width: Number(width) || 80,
+            height: Number(height) || 24,
+            currentCommand: cmd,
+            currentPath: cwd,
+            pid: Number(pid) || 0,
+          };
+        });
+      return { success: true, panes } as any;
+    },
+
+    listTmuxClients: async (options: any) => {
+      const sessionId = String(options?.sessionId || '');
+      const sep = '<<<NC_SEP>>>';
+      const fmt = ['#{client_name}', '#{client_session}', '#{client_width}', '#{client_height}', '#{client_termname}'].join(sep);
+      const res = await execOnSessionHelper(
+        sessionId,
+        `tmux list-clients -F '${fmt}' 2>/dev/null || true`,
+        8000,
+      );
+      if (!res.success) return { success: false, error: res.error, clients: [] } as any;
+      const clients = res.stdout
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const [name = '', session = '', width = '80', height = '24', termName = ''] = line.split(sep);
+          return { name, session, width: Number(width) || 80, height: Number(height) || 24, termName };
+        });
+      return { success: true, clients } as any;
+    },
+
+    tmuxAction: async (options: any) => {
+      const sessionId = String(options?.sessionId || '');
+      const action = String(options?.action || '');
+      const target = String(options?.target || options?.sessionName || '').replace(/'/g, "'\\''");
+      const newName = String(options?.newName || options?.name || '').replace(/'/g, "'\\''");
+      let cmd = '';
+      if (action === 'kill-session') cmd = `tmux kill-session -t '${target}'`;
+      else if (action === 'rename-session') cmd = `tmux rename-session -t '${target}' '${newName}'`;
+      else if (action === 'kill-window') cmd = `tmux kill-window -t '${target}'`;
+      else if (action === 'kill-pane') cmd = `tmux kill-pane -t '${target}'`;
+      else if (action === 'detach-client') cmd = `tmux detach-client -t '${target}'`;
+      else return { success: false, error: `Unsupported tmux action: ${action}` } as any;
+      const res = await execOnSessionHelper(sessionId, cmd, 8000);
+      return { success: res.success && res.code === 0, error: res.stderr || res.error } as any;
+    },
+
+    listAccelerators: async (sessionId: string) => {
+      const cmd = [
+        'nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit,fan.speed,driver_version --format=csv,noheader,nounits 2>/dev/null || true',
+      ].join('; ');
+      const res = await execOnSessionHelper(sessionId, cmd, 10000);
+      if (!res.success) return { success: false, error: res.error, devices: [], processes: [] } as any;
+      const devices: any[] = [];
+      for (const line of res.stdout.split(/\r?\n/)) {
+        const t = line.trim();
+        if (!t) continue;
+        const cols = t.split(',').map((s) => s.trim());
+        if (cols.length >= 6) {
+          const memUsedMiB = parseFloat(cols[4]) || 0;
+          const memTotalMiB = parseFloat(cols[5]) || 0;
+          devices.push({
+            vendor: 'nvidia',
+            index: Number(cols[0]) || 0,
+            uuid: cols[1] || `gpu-${cols[0]}`,
+            name: cols[2] || 'NVIDIA GPU',
+            utilizationPercent: parseFloat(cols[3]) || 0,
+            memoryUsedBytes: Math.round(memUsedMiB * 1024 * 1024),
+            memoryTotalBytes: Math.round(memTotalMiB * 1024 * 1024),
+            memoryPercent: memTotalMiB > 0 ? Math.round((memUsedMiB / memTotalMiB) * 1000) / 10 : 0,
+            temperatureC: parseFloat(cols[6]) || null,
+            powerDrawW: parseFloat(cols[7]) || null,
+            powerLimitW: parseFloat(cols[8]) || null,
+            fanSpeedPercent: parseFloat(cols[9]) || null,
+            driverVersion: cols[10] || '',
+          });
+        }
+      }
+      return { success: true, devices, processes: [] } as any;
+    },
+
+    dockerInspect: async (options: any) => {
+      const bin = options?.runtime === 'podman' ? 'podman' : 'docker';
+      const id = String(options?.containerId || options?.id || '').replace(/[^a-zA-Z0-9_.:-]/g, '');
+      const res = await execOnSessionHelper(options?.sessionId, `${bin} inspect ${id}`, 10000);
+      if (!res.success) return { success: false, error: res.stderr || res.error } as any;
+      try {
+        const arr = JSON.parse(res.stdout);
+        const info = Array.isArray(arr) ? arr[0] : arr;
+        return {
+          success: true,
+          inspect: info
+            ? {
+                id: info.Id,
+                name: info.Name,
+                image: info.Config?.Image,
+                state: info.State,
+                network: info.NetworkSettings,
+                mounts: info.Mounts,
+                env: info.Config?.Env,
+                labels: info.Config?.Labels,
+                raw: info,
+              }
+            : null,
+        } as any;
+      } catch {
+        return { success: true, raw: res.stdout } as any;
+      }
+    },
+
+    dockerImageInspect: async (options: any) => {
+      const bin = options?.runtime === 'podman' ? 'podman' : 'docker';
+      const id = String(options?.imageId || options?.id || '').replace(/[^a-zA-Z0-9_./:-]/g, '');
+      const res = await execOnSessionHelper(options?.sessionId, `${bin} image inspect ${id}`, 10000);
+      if (!res.success) return { success: false, error: res.stderr || res.error } as any;
+      try {
+        const arr = JSON.parse(res.stdout);
+        const info = Array.isArray(arr) ? arr[0] : arr;
+        return { success: true, inspect: info } as any;
+      } catch {
+        return { success: true, raw: res.stdout } as any;
+      }
+    },
+
+    dockerImageAction: async (options: any) => {
+      const bin = options?.runtime === 'podman' ? 'podman' : 'docker';
+      const id = String(options?.imageId || options?.id || '').replace(/[^a-zA-Z0-9_./:-]/g, '');
+      const action = String(options?.action || 'rm');
+      if (!['rm', 'rmi'].includes(action) || !id || id.startsWith('-')) return { success: false, error: 'Unsupported image action' };
+      const cmd = `${bin} rmi -f -- ${shellQuote(id)}`;
+      const res = await execOnSessionHelper(options?.sessionId, cmd, 15000);
+      return { success: res.success && res.code === 0, error: res.stderr || res.error } as any;
+    },
+
+    kubectl: unsupportedMobile,
 
     // ── Window Controls, Settings Overlay & System UI ──
     windowMinimize: async () => {},
@@ -1828,21 +2565,30 @@ export function installAndroidBridgePolyfill(): void {
     setTheme: async (theme) => {
       const hex = theme === 'light' ? '#f8fafc' : '#090d16';
       getNative()?.setStatusBarColorHex(hex);
-      return { ok: true };
+      return Boolean(getNative());
     },
 
     setBackgroundColor: async (color: string) => {
       if (color && color.startsWith('#')) {
         getNative()?.setStatusBarColorHex(color);
       }
-      return { ok: true };
+      return Boolean(getNative());
     },
 
-    setWindowOpacity: async () => ({ ok: true }),
-    setWindowBackgroundBlur: async () => ({ ok: true }),
-    setAppIconVariant: async () => ({ ok: true }),
-    setLanguage: async () => ({ ok: true }),
+    setWindowOpacity: async () => false,
+    setWindowBackgroundBlur: async () => false,
+    setAppIconVariant: async () => false,
+    setLanguage: async () => false,
     onLanguageChanged: () => () => {},
+
+    openExternalUrl: async (url: string) => {
+      const native = getNative();
+      if (native) {
+        native.openExternalUrl(url);
+      } else {
+        window.open(url, '_blank', 'noopener,noreferrer');
+      }
+    },
 
     openExternal: async (url: string) => {
       const native = getNative();
@@ -1853,11 +2599,11 @@ export function installAndroidBridgePolyfill(): void {
       }
     },
 
-    openPath: async () => ({ ok: true }),
+    openPath: async () => ({ success: false, error: 'Unsupported on Android' }),
 
     getAppInfo: async () => ({
       name: 'Netcatty Mate Mobile',
-      version: '3.0.1',
+      version: '3.1.0',
       platform: 'android',
       arch: 'arm64-v8a',
       electron: 'Android WebView + JSch 0.2.21',
@@ -1887,41 +2633,51 @@ export function installAndroidBridgePolyfill(): void {
       lastLockedAt: null,
       lastUnlockedAt: Date.now(),
       lastActivityAt: Date.now(),
-    } as any),
+    }),
     getAppLockSettings: async () => ({
       enabled: false,
-      timeoutMinutes: 15,
+      timeoutMinutes: 15 as const,
       systemUnlockEnabled: false,
       systemUnlockAutoPromptEnabled: false,
-      lockOnBackgroundHide: false,
       passwordVerifier: null,
-      configCorrupted: false,
-    } as any),
-    setAppLockTimeoutMinutes: async () => ({ ok: true }),
-    requestAppLockEnable: async () => ({ ok: true }),
-    requestAppLockDisable: async () => ({ ok: true }),
-    requestAppLockReset: async () => ({ ok: true }),
-    requestAppLockPasswordChange: async () => ({ ok: true }),
-    setAppLockRuntimeLocked: async () => ({ ok: true }),
-    requestAppLockUnlock: async () => ({ ok: true }),
+    }),
+    setAppLockTimeoutMinutes: unsupportedMobile,
+    requestAppLockEnable: unsupportedMobile,
+    requestAppLockDisable: unsupportedMobile,
+    requestAppLockReset: unsupportedMobile,
+    requestAppLockPasswordChange: unsupportedMobile,
+    setAppLockRuntimeLocked: unsupportedMobile,
+    requestAppLockUnlock: unsupportedMobile,
     getAppLockSystemUnlockStatus: async () => ({
       supported: false,
       available: false,
       enabled: false,
-      platform: 'unsupported',
+      platform: 'unsupported' as const,
       label: null,
       reason: null,
-    } as any),
-    setAppLockSystemUnlockEnabled: async () => ({ ok: true }),
+    }),
+    setAppLockSystemUnlockEnabled: async () => ({ ok: false, error: 'unsupported' }),
     requestAppLockSystemUnlock: async () => ({ ok: false, error: 'unsupported' } as any),
-    reportAppLockActivity: async () => ({ ok: true }),
+    reportAppLockActivity: async () => {},
     onAppLockSettingsChanged: () => () => {},
     onAppLockRuntimeStateChanged: () => () => {},
     onAppLockReopen: () => () => {},
 
-    credentialsAvailable: async () => true,
-    credentialsEncrypt: async (plaintext: string) => `enc:v1:${plaintext}`,
-    credentialsDecrypt: async (value: string) => value.replace(/^enc:v1:/, ''),
+    // ── TOTP 2FA Preview (WebCrypto RFC 6238) ──
+    previewTotp: async (payload: any) => previewTotpWebCrypto(payload),
+    scanTotpQrFromScreen: async () => ({ ok: false, error: 'unavailable' } as any),
+
+    credentialsAvailable: async () => Boolean(getNative()?.credentialsAvailable()),
+    credentialsEncrypt: async (plaintext: string) => {
+      const result = getNative()?.credentialsEncrypt(plaintext);
+      if (!result) throw new Error('Android credential encryption unavailable');
+      return result;
+    },
+    credentialsDecrypt: async (value: string) => {
+      const native = getNative();
+      if (!native) throw new Error('Android credential decryption unavailable');
+      return native.credentialsDecrypt(value);
+    },
 
     // ── Clipboard ──
     readClipboardText: async () => {
@@ -1942,32 +2698,58 @@ export function installAndroidBridgePolyfill(): void {
     hasClipboardImage: async () => false,
 
     // ── Vault Backups & Dialogs ──
-    getVaultBackupCapabilities: async () => ({ encryptionAvailable: true }),
-    createVaultBackup: async () => ({ ok: true, id: `bk-${Date.now()}` }),
+    getVaultBackupCapabilities: async () => ({ encryptionAvailable: false }),
+    createVaultBackup: unsupportedMobile,
     listVaultBackups: async () => [],
-    readVaultBackup: async () => ({ ok: false }),
-    trimVaultBackups: async () => ({ ok: true }),
-    clearVaultBackups: async () => ({ ok: true }),
-    openVaultBackupDir: async () => ({ ok: true }),
+    readVaultBackup: unsupportedMobile,
+    trimVaultBackups: unsupportedMobile,
+    clearVaultBackups: unsupportedMobile,
+    openVaultBackupDir: unsupportedMobile,
     onVaultBackupsChanged: () => () => {},
 
-    showSaveDialog: async (defaultPath?: string) => {
+    showSaveDialog: async (defaultPath?: any) => {
       const home = getNative()?.getHomeDirSync() || '/sdcard/Download';
-      return `${home}/Downloads/${defaultPath || `netcatty-export-${Date.now()}.json`}`;
+      const fname =
+        typeof defaultPath === 'string'
+          ? defaultPath.split('/').pop()
+          : defaultPath?.defaultPath || `netcatty-export-${Date.now()}.json`;
+      return `${home}/Downloads/${fname || `netcatty-export-${Date.now()}.json`}`;
     },
     selectDirectory: async () => {
       const home = getNative()?.getHomeDirSync() || '/sdcard/Download';
       return `${home}/Downloads`;
     },
-    selectFile: async () => null,
+    selectFile: async () => {
+      const native = getNative();
+      if (!native?.requestOpenFilePicker) return null;
+      const cbId = nextReqId('filepick');
+      return new Promise<string | null>((resolve) => {
+        const timer = window.setTimeout(() => {
+          pendingFilePickers.delete(cbId);
+          resolve(null);
+        }, 120000);
+        pendingFilePickers.set(cbId, (res) => {
+          window.clearTimeout(timer);
+          if (res.canceled || !res.filePath) resolve(null);
+          else resolve(res.filePath);
+        });
+        native.requestOpenFilePicker(cbId);
+      });
+    },
+    selectApplication: async () => null,
 
     // ── AI Bridge ──
     aiSyncProviders: async (providers) => {
-      if (Array.isArray(providers)) cachedAiProviders = providers;
+      cachedAiProviders = [];
+      const decrypted = await Promise.all(providers.map(async (provider) => ({
+        ...provider,
+        apiKey: provider.apiKey?.startsWith('enc:') ? await bridge.credentialsDecrypt!(provider.apiKey) : provider.apiKey,
+      })));
+      cachedAiProviders = decrypted;
       return { ok: true };
     },
-    aiSyncWebSearch: async () => ({ ok: true }),
-    aiAllowlistAddHost: async () => ({ ok: true }),
+    aiSyncWebSearch: unsupportedMobile,
+    aiAllowlistAddHost: unsupportedMobile,
     aiFetch: async (url, method, headers, body, providerId, _skipHostCheck, _followRedirects, skipTLSVerify) => {
       const native = getNative();
       if (!native) return { ok: false, status: 0, data: '', error: 'NativeBridge unavailable' };
@@ -2037,8 +2819,8 @@ export function installAndroidBridgePolyfill(): void {
         error: res.error,
       };
     },
-    aiCattyCancelExec: async () => ({ ok: true }),
-    aiSetChatSessionCancelled: async () => ({ ok: true }),
+    aiCattyCancelExec: unsupportedMobile,
+    aiSetChatSessionCancelled: unsupportedMobile,
     aiDiscoverAgents: async () => [],
     aiUserSkillsGetStatus: async () => ({
       ok: true,
@@ -2046,22 +2828,22 @@ export function installAndroidBridgePolyfill(): void {
       skills: [],
       warnings: [],
     }),
-    aiMcpUpdateSessions: async () => ({ ok: true }),
-    aiMcpUpdateLiveSessions: async () => ({ ok: true }),
-    aiMcpMergeSessions: async () => ({ ok: true }),
-    aiMcpUpdateAttachments: async () => ({ ok: true }),
-    aiMcpSetCommandBlocklist: async () => ({ ok: true }),
-    aiMcpSetCommandTimeout: async () => ({ ok: true }),
-    aiMcpSetMaxIterations: async () => ({ ok: true }),
-    aiMcpSetPermissionMode: async () => ({ ok: true }),
-    aiMcpSetToolIntegrationMode: async () => ({ ok: true }),
-    aiMcpSyncPermissionGrants: async () => ({ ok: true }),
+    aiMcpUpdateSessions: unsupportedMobile,
+    aiMcpUpdateLiveSessions: unsupportedMobile,
+    aiMcpMergeSessions: unsupportedMobile,
+    aiMcpUpdateAttachments: unsupportedMobile,
+    aiMcpSetCommandBlocklist: unsupportedMobile,
+    aiMcpSetCommandTimeout: unsupportedMobile,
+    aiMcpSetMaxIterations: unsupportedMobile,
+    aiMcpSetPermissionMode: unsupportedMobile,
+    aiMcpSetToolIntegrationMode: unsupportedMobile,
+    aiMcpSyncPermissionGrants: unsupportedMobile,
     onMcpApprovalRequest: () => () => {},
     onMcpApprovalCleared: () => () => {},
-    respondMcpApproval: async () => ({ ok: true }),
-    cancelMcpApprovalTimeout: async () => ({ ok: true }),
+    respondMcpApproval: unsupportedMobile,
+    cancelMcpApprovalTimeout: unsupportedMobile,
     onVaultAgentRequest: () => () => {},
-    respondVaultAgent: async () => ({ ok: true }),
+    respondVaultAgent: unsupportedMobile,
 
     // ── Plugins & Misc Stubs ──
     pluginHostReady: () => false,
@@ -2081,14 +2863,14 @@ export function installAndroidBridgePolyfill(): void {
     onPluginThemesChanged: () => () => {},
     onSystemThemeChanged: () => () => {},
     getPluginScopeCatalog: async () => ({ hosts: [], groups: [], keys: [], identities: [], snippets: [] } as any),
-    setPluginScopeCatalog: async () => ({ ok: true } as any),
+    setPluginScopeCatalog: unsupportedMobile,
     onPluginScopeCatalogChanged: () => () => {},
-    setPluginEnvironment: async () => ({ ok: true } as any),
-    setPluginInteractionReady: async () => ({ ok: true } as any),
-    setPluginPermissionReady: async () => ({ ok: true } as any),
-    setPluginAIHostReady: async () => ({ ok: true } as any),
-    setPluginAgentHostReady: async () => ({ ok: true } as any),
-    updatePluginCredentialCatalog: async () => ({ ok: true } as any),
+    setPluginEnvironment: unsupportedMobile,
+    setPluginInteractionReady: unsupportedMobile,
+    setPluginPermissionReady: unsupportedMobile,
+    setPluginAIHostReady: unsupportedMobile,
+    setPluginAgentHostReady: unsupportedMobile,
+    updatePluginCredentialCatalog: unsupportedMobile,
     onPluginInteraction: () => () => {},
     onPluginPermission: () => () => {},
     onPluginAIHostRequest: () => () => {},
@@ -2181,7 +2963,7 @@ export function installAndroidBridgePolyfill(): void {
     listAutocompleteRemoteDir: async (sessionId, dirPath) => {
       const res = await execOnSessionHelper(
         sessionId,
-        `ls -1p ${dirPath || '.'} 2>/dev/null | head -n 60`,
+        `ls -1p -- ${shellQuote(dirPath || '.')} 2>/dev/null | head -n 60`,
         3000,
       );
       if (!res.success) return { success: false, entries: [] };
@@ -2198,5 +2980,251 @@ export function installAndroidBridgePolyfill(): void {
     listAutocompleteLocalDir: async () => ({ success: true, entries: [] }),
   };
 
+  // ── Complete IPC Parity Stubs & Mobile Safe Implementations (Zero-Gap Coverage) ──
+  const extraBridgeMethods = {
+    externalMcpGetStatus: unsupportedMobile,
+    externalMcpSetEnabled: async () => ({ ok: false, error: 'External CLI MCP daemon is desktop-only' } as any),
+    externalMcpSetConfig: unsupportedMobile,
+    externalMcpCodexGetStatus: unsupportedMobile,
+    externalMcpClaudeGetStatus: unsupportedMobile,
+    externalMcpGrokGetStatus: unsupportedMobile,
+    externalMcpCodexAdd: async () => ({ ok: false, error: 'Unsupported on Android' } as any),
+    externalMcpClaudeAdd: async () => ({ ok: false, error: 'Unsupported on Android' } as any),
+    externalMcpGrokAdd: async () => ({ ok: false, error: 'Unsupported on Android' } as any),
+    externalMcpGetUniversalSetupPrompt: async () => ({ ok: false, prompt: '' } as any),
+    setExternalMcpApprovalAlertMode: unsupportedMobile,
+
+    // System Temp / Crash Logs / Session Logs
+    getTempDirInfo: async () => {
+      const home = getNative()?.getHomeDirSync() || '/data/user/0/de.newaii.netcatty/files';
+      return { path: `${home}/Downloads`, isCustom: false, sizeBytes: 0, fileCount: 0 } as any;
+    },
+    clearTempDir: unsupportedMobile,
+    setCustomTempDir: unsupportedMobile,
+    resetCustomTempDir: unsupportedMobile,
+    chooseTempDir: async () => null as any,
+    openTempDir: unsupportedMobile,
+    getCrashLogs: async () => [] as any,
+    readCrashLog: async () => [] as any,
+    clearCrashLogs: unsupportedMobile,
+    openCrashLogsDir: unsupportedMobile,
+    selectSessionLogsDir: async () => {
+      const home = getNative()?.getHomeDirSync() || '/data/user/0/de.newaii.netcatty/files';
+      return { canceled: false, path: `${home}/Downloads` } as any;
+    },
+    openSessionLogsDir: unsupportedMobile,
+    clearSessionLogsDir: unsupportedMobile,
+    prepareSessionLog: async () => ({ ok: false, error: 'Session log file export unavailable on mobile' } as any),
+    exportSessionLog: unsupportedMobile,
+    revealSessionLog: unsupportedMobile,
+    chooseManualSessionLogPath: async () => null as any,
+    startManualSessionLog: unsupportedMobile,
+    stopManualSessionLog: unsupportedMobile,
+    getManualSessionLogStatus: async () => ({ active: false } as any),
+
+    // Editor Window & File Watch
+    openEditorWindow: async (snapshot: any) => {
+      editorOpenTabListeners.forEach((cb) => {
+        try {
+          cb(snapshot);
+        } catch {}
+      });
+      return { success: true };
+    },
+    focusEditorWindow: unsupportedMobile,
+    closeEditorWindowTabs: unsupportedMobile,
+    dockEditorWindowTab: unsupportedMobile,
+    saveEditorWindowTab: unsupportedMobile,
+    remapEditorWindowSession: unsupportedMobile,
+    onEditorWindowOpenTab: (cb: any) => {
+      editorOpenTabListeners.add(cb);
+      return () => editorOpenTabListeners.delete(cb);
+    },
+    onEditorWindowActivateTab: () => () => {},
+    onEditorWindowRemapSession: () => () => {},
+    onEditorWindowCloseTabs: () => () => {},
+    onEditorWindowDockRequest: () => () => {},
+    onEditorWindowSaveRequest: () => () => {},
+    onEditorWindowDirtyChanged: () => () => {},
+    onEditorWindowTabsClosed: () => () => {},
+    reportEditorWindowCloseTabsResult: () => {},
+    reportEditorWindowDirty: () => {},
+    reportEditorWindowDockResult: () => {},
+    reportEditorWindowSaveResult: () => {},
+    reportEditorWindowTabsClosed: () => {},
+
+    startFileWatch: async () => ({ success: false, error: 'External app watch unsupported on Android' } as any),
+    stopFileWatch: unsupportedMobile,
+    onFileWatchSynced: () => () => {},
+    onFileWatchError: () => () => {},
+    onFileWatchStopped: () => () => {},
+    registerTempFile: unsupportedMobile,
+    unregisterTempFile: unsupportedMobile,
+    deleteTempFile: async (filePath: string) => {
+      getNative()?.deleteLocalFile(filePath);
+      return { success: true } as any;
+    },
+    stageUploadFile: async () => '' as any,
+    cancelStagedUploadFile: unsupportedMobile,
+    openWithApplication: async () => ({ success: false, error: 'Use built-in SFTP text editor on Android' } as any),
+    openWithSystemDefault: async () => ({ success: false } as any),
+    startLocalFileDrag: async () => ({ started: false } as any),
+    cancelLocalFileDrag: unsupportedMobile,
+    createSftpArchive: async () => ({ success: false, error: 'Archive creation requires SSH shell tar' } as any),
+    extractSftpArchive: async () => ({ success: false, error: 'Archive extraction requires SSH shell tar' } as any),
+    extractLocalArchive: async () => ({ success: false, error: 'Local archive extraction unsupported' } as any),
+
+    // Popup / Multi-Window / Snapshot Stubs
+    openTerminalPopup: async () => ({ ok: false, error: 'Popup windows are disabled on mobile' } as any),
+    openSessionInNewWindow: async () => ({ ok: false, error: 'Multi-window is disabled on mobile' } as any),
+    onOpenSessionInNewWindow: () => () => {},
+    onTerminalPopupConfig: () => () => {},
+    onTerminalPopupPrepareClose: () => () => {},
+    markAttachPopupClosePrepared: () => {},
+    onTerminalSessionSnapshotRequest: () => () => {},
+    onTerminalSessionApplySnapshot: () => () => {},
+    requestTerminalSessionSnapshot: async () => null as any,
+    respondTerminalSessionSnapshot: () => {},
+    applyTerminalSessionSnapshot: unsupportedMobile,
+    rebindTerminalSessionOutput: unsupportedMobile,
+    restoreTerminalSessionOutput: unsupportedMobile,
+    sendSerialYmodem: async () => ({ success: false, error: 'Serial YMODEM unavailable on Android' } as any),
+    receiveSerialYmodem: async () => ({ success: false, error: 'Serial YMODEM unavailable on Android' } as any),
+    startZmodemDragDropUpload: async () => ({ success: false } as any),
+    ptyGetChildProcesses: async () => [] as any,
+    getWindowsPtyInfo: () => null,
+
+    // AI CLI / Codex / SDK / Privacy / Backup Stubs
+    aiResolveCli: async () => ({ ok: false, found: false } as any),
+    aiPrewarmShellEnv: unsupportedMobile,
+    aiCodexGetIntegration: unsupportedMobile,
+    aiCodexGetLoginSession: async () => null as any,
+    aiCodexStartLogin: async () => ({ ok: false, error: 'Codex CLI unavailable on Android' } as any),
+    aiCodexCancelLogin: unsupportedMobile,
+    aiCodexLogout: unsupportedMobile,
+    codexAppServerGetStatus: unsupportedMobile,
+    aiUserSkillsOpenFolder: unsupportedMobile,
+    aiUserSkillsBuildContext: unsupportedMobile,
+    aiSessionsBackupExport: async () => ({ ok: false, canceled: true } as any),
+    aiSessionsBackupImport: async () => ({ ok: false, canceled: true } as any),
+    aiSessionsBackupReadLatest: async () => ({ ok: false } as any),
+    aiSdkAgentCancel: unsupportedMobile,
+    aiSdkAgentCleanup: unsupportedMobile,
+    aiSdkAgentListModels: unsupportedMobile,
+    aiSdkAgentElicitationResponse: unsupportedMobile,
+    aiPrivacyStatus: async () => ({ ok: true, enabled: false }),
+    aiPrivacyTransform: unsupportedMobile,
+    aiPrivacyClearSession: unsupportedMobile,
+    aiCapability: async () => ({ ok: false, error: 'Unsupported capability on Android' } as any),
+    deleteChatToolOutputsTemp: unsupportedMobile,
+    deleteTerminalToolOutputsEverywhereTemp: unsupportedMobile,
+
+    // Host Browser / Automation Scripts / Plugin Management Stubs
+    openHostBrowser: unsupportedMobile,
+    openHostBrowserUrl: async ({ url }: any) => {
+      if (url) await bridge.openExternal!(url);
+      return { ok: true } as any;
+    },
+    requestHostBrowserPanel: async () => ({ ok: false } as any),
+    closeHostBrowserPanel: unsupportedMobile,
+    commandHostBrowserPanel: async () => ({ ok: false } as any),
+    commandHostBrowserPanelDownload: async () => ({ ok: false } as any),
+    getHostBrowserPanelState: async () => null as any,
+    setHostBrowserPanelLayout: unsupportedMobile,
+    listHostBrowserPanelBookmarks: async () => [] as any,
+    saveHostBrowserPanelBookmark: unsupportedMobile,
+    removeHostBrowserPanelBookmark: unsupportedMobile,
+    listHostBrowserPanelDownloads: async () => [] as any,
+
+    scriptRun: async () => ({ ok: false, error: 'Script runner unavailable on mobile' } as any),
+    scriptStop: unsupportedMobile,
+    scriptPause: unsupportedMobile,
+    scriptResume: unsupportedMobile,
+    scriptDialogResponse: unsupportedMobile,
+    scriptScreenSnapshotResponse: unsupportedMobile,
+    scriptRecordingStart: unsupportedMobile,
+    scriptRecordingStop: unsupportedMobile,
+    scriptRecordingAppendStep: unsupportedMobile,
+
+    prepareGitHubPlugin: async () => ({ ok: false, error: 'Desktop plugins unavailable on mobile' } as any),
+    installGitHubPlugin: async () => ({ ok: false, error: 'Desktop plugins unavailable on mobile' } as any),
+    discardGitHubPlugin: unsupportedMobile,
+    installCatalogPlugin: async () => ({ ok: false, error: 'Desktop plugins unavailable on mobile' } as any),
+    installPluginPackage: async () => ({ ok: false, error: 'Desktop plugins unavailable on mobile' } as any),
+    uninstallPlugin: unsupportedMobile,
+    setPluginEnabled: async () => ({ ok: false } as any),
+    resetPluginSource: unsupportedMobile,
+    applyPluginTheme: async () => ({
+      selection: { formatVersion: 1, revision: 0, light: null, dark: null },
+      entries: [],
+      diagnostics: [],
+    } as any),
+    executePluginCommand: async () => ({ ok: false } as any),
+    updatePluginSetting: unsupportedMobile,
+    resetPluginSetting: unsupportedMobile,
+    getPluginCatalogReadme: async () => '' as any,
+    getPluginCatalogReadmeImages: async () => ({}) as any,
+    getPluginPermissions: async () => ({ permissions: [], policyRevision: 0 } as any),
+    setPluginPermissionMode: unsupportedMobile,
+    revokePluginPermissions: unsupportedMobile,
+    getPluginLogStatus: async () => ({ enabled: false, path: '' } as any),
+    configurePluginLogs: unsupportedMobile,
+    clearPluginLogs: unsupportedMobile,
+    exportPluginLogs: async () => ({ ok: false } as any),
+    openPluginLogFolder: unsupportedMobile,
+    detectPluginImporter: async () => null as any,
+    parsePluginImporterFile: async () => ({ hosts: [] } as any),
+    selectPluginImporterFile: async () => null as any,
+    onPluginImporterProgress: () => () => {},
+    onPluginCatalogChanged: () => () => {},
+    invokePluginExtensionProvider: async () => ({ ok: false } as any),
+    cancelPluginExtensionRequest: async () => false as any,
+    startPluginConnection: async () => ({ ok: false } as any),
+    controlPluginConnection: async () => ({ ok: false } as any),
+    cancelPluginTerminalRequest: async () => false as any,
+    providePluginTerminal: async () => ({ ok: false } as any),
+    publishPluginTerminalSessionEvent: unsupportedMobile,
+    setPluginTerminalTarget: unsupportedMobile,
+    respondPluginAIHost: unsupportedMobile,
+    respondPluginInteraction: async () => true as any,
+    getPluginAuthorPresentation: async () => null as any,
+    getPluginBrandIcon: async () => null as any,
+    getPluginContributionIcon: async () => null as any,
+    getPluginSourceBinding: async () => null as any,
+
+    // Misc Helpers
+    logDiagnostic: async () => ({ success: false, error: 'Native diagnostic persistence unsupported' }),
+    showSystemNotification: unsupportedMobile,
+    confirmCloseBusy: async () => true as any,
+    getPathForFile: (file: File) => (file as File & { path?: string }).path,
+    prepareOAuthCallback: unsupportedMobile,
+    awaitOAuthCallback: unsupportedMobile,
+    cancelOAuthCallback: unsupportedMobile,
+    connectToHostFromTrayPanel: unsupportedMobile,
+    jumpToSessionFromTrayPanel: unsupportedMobile,
+    closeSessionFromTrayPanel: unsupportedMobile,
+    startPortForwardFromTrayPanel: unsupportedMobile,
+
+    // No native OAuth redirect receiver exists: fail closed for these providers.
+    googleExchangeCodeForTokens: unsupportedMobile,
+    googleRefreshAccessToken: unsupportedMobile,
+    googleGetUserInfo: unsupportedMobile,
+    googleDriveFindSyncFile: unsupportedMobile,
+    googleDriveDownloadSyncFile: unsupportedMobile,
+    googleDriveCreateSyncFile: unsupportedMobile,
+    googleDriveUpdateSyncFile: unsupportedMobile,
+    googleDriveDeleteSyncFile: unsupportedMobile,
+    onedriveExchangeCodeForTokens: unsupportedMobile,
+    onedriveRefreshAccessToken: unsupportedMobile,
+    onedriveGetUserInfo: unsupportedMobile,
+    onedriveFindSyncFile: unsupportedMobile,
+    onedriveDownloadSyncFile: unsupportedMobile,
+    onedriveUploadSyncFile: unsupportedMobile,
+    onedriveDeleteSyncFile: unsupportedMobile,
+  };
+
+  // Validate extra methods too; unknown legacy aliases do not erase known contracts.
+  const checkedExtra: Partial<NetcattyBridge> & Record<string, unknown> = extraBridgeMethods;
+  Object.assign(bridge, checkedExtra);
   window.netcatty = bridge;
 }

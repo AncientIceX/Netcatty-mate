@@ -98,6 +98,10 @@ export const generatePKCEChallenge = async (): Promise<PKCEChallenge> => {
 export const buildAuthUrl = async (
   redirectUri: string
 ): Promise<{ url: string; pkce: PKCEChallenge }> => {
+  if (!SYNC_CONSTANTS.GOOGLE_CLIENT_ID ||
+      (typeof window !== 'undefined' && (window as any).__netcattyMobileMode)) {
+    throw new Error('GOOGLE OAuth is not configured or supported on this mobile build');
+  }
   const pkce = await generatePKCEChallenge();
 
   const params = new URLSearchParams({
@@ -288,6 +292,9 @@ export const createSyncFile = async (
   accessToken: string,
   syncedFile: SyncedFile
 ): Promise<string> => {
+  if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+    throw new Error('手机端已锁定「只下拉同步，不上传同步」，禁止在 Google Drive 新建同步文件');
+  }
   const bridge = netcattyBridge.get();
   const createViaMain = bridge?.googleDriveCreateSyncFile;
   if (createViaMain) {
@@ -354,6 +361,9 @@ export const updateSyncFile = async (
   fileId: string,
   syncedFile: SyncedFile
 ): Promise<void> => {
+  if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+    throw new Error('手机端已锁定「只下拉同步，不上传同步」，禁止覆盖 Google Drive 云端数据');
+  }
   const bridge = netcattyBridge.get();
   const updateViaMain = bridge?.googleDriveUpdateSyncFile;
   if (updateViaMain) {
@@ -444,6 +454,9 @@ export const deleteSyncFile = async (
   accessToken: string,
   fileId: string
 ): Promise<void> => {
+  if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+    throw new Error('手机端已锁定「只下拉同步，不上传同步」，禁止删除 Google Drive 云端数据');
+  }
   const bridge = netcattyBridge.get();
   const deleteViaMain = bridge?.googleDriveDeleteSyncFile;
   if (deleteViaMain) {
@@ -649,6 +662,9 @@ export class GoogleDriveAdapter {
    * Upload sync file
    */
   async upload(syncedFile: SyncedFile): Promise<string> {
+    if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+      throw new Error('Mobile cloud sync is download-only');
+    }
     const accessToken = await this.ensureValidToken();
 
     if (this.fileId) {
@@ -681,6 +697,9 @@ export class GoogleDriveAdapter {
    * Delete sync data
    */
   async deleteSync(): Promise<void> {
+    if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+      throw new Error('Mobile cloud sync is download-only');
+    }
     if (!this.tokens || !this.fileId) {
       return;
     }

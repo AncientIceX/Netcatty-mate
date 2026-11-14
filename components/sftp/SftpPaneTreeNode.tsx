@@ -66,6 +66,8 @@ export const TreeNode = React.memo<TreeNodeProps>(({
         isDragOver && 'ring-2 ring-primary/50 ring-inset bg-primary/10',
       )}
       style={{ gridTemplateColumns: columnTemplate, height: TREE_ROW_HEIGHT }}
+      // Row clicks select; only the chevron expands, and double-click opens.
+      // This preserves modifier/multi-selection and avoids duplicate activation.
       onClick={e => onNodeClick(entry, entryPath, e)}
       onDoubleClick={() => onOpenEntry(entry, entryPath)}
       onContextMenu={e => {

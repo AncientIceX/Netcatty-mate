@@ -3461,9 +3461,16 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
       const binary = atob(payload);
       const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
       const text = new TextDecoder().decode(bytes);
-      navigator.clipboard.writeText(text).catch((err) => {
-        logger.warn('[XTerm] OSC 52 clipboard write failed:', err);
-      });
+      const bridge = netcattyBridge.get();
+      if (bridge?.writeClipboardText) {
+        bridge.writeClipboardText(text).catch((err) => {
+          logger.warn('[XTerm] OSC 52 bridge clipboard write failed:', err);
+        });
+      } else {
+        navigator.clipboard.writeText(text).catch((err) => {
+          logger.warn('[XTerm] OSC 52 clipboard write failed:', err);
+        });
+      }
       logger.debug('[XTerm] OSC 52 clipboard write', { length: text.length });
     } catch (err) {
       logger.warn('[XTerm] Failed to handle OSC 52:', err);
@@ -3545,6 +3552,10 @@ export const createXTermRuntime = (ctx: CreateXTermRuntimeContext): XTermRuntime
     resolveCursorLineHighlightBackground(ctx.terminalTheme.colors),
   );
   cursorLineHighlighter.setEnabled(settings?.highlightCursorLine ?? false);
+
+  // Let xterm's viewport own touch scrolling. A second container-level handler
+  // would scroll twice; synthesizing cursor keys in the alternate buffer can
+  // unexpectedly edit commands/documents in applications such as vim.
 
   return {
     term,

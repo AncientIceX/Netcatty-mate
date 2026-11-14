@@ -56,6 +56,8 @@ const SftpFileRowInner: React.FC<SftpFileRowProps> = ({
     const modifiedLabel = entry.lastModifiedFormatted || formatDate(entry.lastModified);
     const sizeLabel = entry.sizeFormatted || formatBytes(entry.size);
     const handleSelect = useCallback((e: React.MouseEvent) => {
+        // Keep selection separate from activation, including on touch devices.
+        // Opening on click also opens again on the following double-click.
         onSelect(entry, index, e);
     }, [entry, index, onSelect]);
     const handleOpen = useCallback(() => {

@@ -203,6 +203,9 @@ export class WebDAVAdapter {
   }
 
   async upload(syncedFile: SyncedFile): Promise<string> {
+    if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+      throw new Error('Mobile cloud sync is download-only');
+    }
     return this.withWebdavErrorContext('upload', async () => {
       if (!this.config) {
         throw new Error('Missing WebDAV config');
@@ -242,6 +245,9 @@ export class WebDAVAdapter {
   }
 
   async deleteSync(): Promise<void> {
+    if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+      throw new Error('Mobile cloud sync is download-only');
+    }
     return this.withWebdavErrorContext('delete', async () => {
       if (!this.config) {
         throw new Error('Missing WebDAV config');

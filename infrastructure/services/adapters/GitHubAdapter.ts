@@ -116,9 +116,32 @@ const delayWithSignal = (ms: number, signal?: AbortSignal): Promise<void> => {
  * Start GitHub Device Flow authentication
  * Returns codes for user to enter in browser
  */
+// Attempt-scoped in-memory mailbox: never expose PATs on window or persist them.
+const pendingPatAttempts = new Map<string, string | null>();
+export const submitGitHubPat = (attempt: string, token: string): boolean => {
+  if (!pendingPatAttempts.has(attempt) || !token.trim()) return false;
+  pendingPatAttempts.set(attempt, token.trim());
+  return true;
+};
+export const cancelGitHubPat = (attempt: string): void => {
+  pendingPatAttempts.delete(attempt);
+};
+
 export const startDeviceFlow = async (): Promise<DeviceFlowState> => {
   console.log('[GitHub] Starting device flow...');
   console.log('[GitHub] Client ID:', SYNC_CONSTANTS.GITHUB_CLIENT_ID);
+
+  if (!SYNC_CONSTANTS.GITHUB_CLIENT_ID) {
+    const attempt = `PAT-TOKEN:${createGitHubPollId()}`;
+    pendingPatAttempts.set(attempt, null);
+    return {
+      deviceCode: attempt,
+      userCode: attempt,
+      verificationUri: 'https://github.com/settings/tokens/new?scopes=gist,read:user&description=Netcatty+Mate+Sync',
+      expiresAt: Date.now() + 900 * 1000,
+      interval: 2,
+    };
+  }
 
   const bridge = netcattyBridge.get();
   if (bridge?.githubStartDeviceFlow) {
@@ -176,6 +199,29 @@ export const pollForToken = async (
   onPending?: () => void,
   signal?: AbortSignal
 ): Promise<OAuthTokens | null> => {
+  if (deviceCode.startsWith('PAT-TOKEN:')) {
+    try {
+      while (Date.now() < expiresAt) {
+        throwIfAborted(signal);
+        if (!pendingPatAttempts.has(deviceCode)) throw createGitHubCancelError();
+        const token = pendingPatAttempts.get(deviceCode);
+        if (token) {
+          pendingPatAttempts.set(deviceCode, null);
+          const ok = await validateToken(token);
+          throwIfAborted(signal);
+          if (!pendingPatAttempts.has(deviceCode)) throw createGitHubCancelError();
+          if (!ok) throw new Error('GitHub Personal Access Token 无效');
+          return { accessToken: token, tokenType: 'bearer' };
+        }
+        onPending?.();
+        await delayWithSignal(200, signal);
+      }
+      throw new Error('GitHub PAT 输入已超时，请重试');
+    } finally {
+      pendingPatAttempts.delete(deviceCode);
+    }
+  }
+
   const pollInterval = Math.max(interval, 5) * 1000; // Minimum 5 seconds
   const bridge = netcattyBridge.get();
 
@@ -437,7 +483,7 @@ const fetchGistRawContent = async (
 
   const response = await fetch(rawUrl, {
     headers: {
-      Authorization: `Bearer ${accessToken}`,
+      Authorization: 'Bearer ' + accessToken,
       Accept: 'application/vnd.github.raw',
     },
   });
@@ -528,6 +574,9 @@ export const deleteSyncGist = async (
   accessToken: string,
   gistId: string
 ): Promise<void> => {
+  if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+    throw new Error('手机端已锁定「只下拉同步，不上传同步」，禁止删除云端 Gist 数据');
+  }
   const response = await fetch(`${SYNC_CONSTANTS.GITHUB_API_BASE}/gists/${gistId}`, {
     method: 'DELETE',
     headers: {
@@ -648,9 +697,10 @@ export class GitHubAdapter {
     }
 
     throwIfAborted(signal);
-    this.accessToken = tokens.accessToken;
-    this.account = await getUserInfo(tokens.accessToken, signal);
+    const account = await getUserInfo(tokens.accessToken, signal);
     throwIfAborted(signal);
+    this.accessToken = tokens.accessToken;
+    this.account = account;
 
     return tokens;
   }
@@ -693,6 +743,9 @@ export class GitHubAdapter {
    * Upload sync file
    */
   async upload(syncedFile: SyncedFile): Promise<string> {
+    if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+      throw new Error('Mobile cloud sync is download-only');
+    }
     if (!this.accessToken) {
       throw new Error('Not authenticated');
     }
@@ -729,6 +782,9 @@ export class GitHubAdapter {
    * Delete sync data
    */
   async deleteSync(): Promise<void> {
+    if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+      throw new Error('Mobile cloud sync is download-only');
+    }
     if (!this.accessToken || !this.gistId) {
       return;
     }

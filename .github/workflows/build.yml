@@ -6,6 +6,10 @@ on:
     tags: [ 'v*' ]
   workflow_dispatch:
 
+concurrency:
+  group: netcatty-android-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -18,10 +22,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js 22
+      - name: Set up Node.js 24
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
 
       - name: Set up JDK 17
@@ -41,6 +45,15 @@ jobs:
           node scripts/patch-xterm-webgl-atlas.cjs
           node scripts/copy-monaco.cjs
           npm run build
+          npx tsc --noEmit -p tsconfig.json > mobile-typecheck.log 2>&1 || true
+          if grep -E '^(infrastructure/mobile/|android/|components/cloud-sync/CloudSyncControls|components/CloudSyncSettings|components/sftp/SftpFileRow|components/sftp/SftpPaneTreeNode|infrastructure/persistence/localStorageAdapter|infrastructure/config/i18n|application/state/useAutoSync|infrastructure/services/adapters/)' mobile-typecheck.log; then
+            echo 'Mobile changes have TypeScript errors'; exit 1
+          fi
+          node --experimental-strip-types scripts/mobile-bridge-test.mjs
+          node --test scripts/mobile-ui-safety.test.cjs
+          node --import tsx --test infrastructure/services/cloudSync/mobilePullOnly.test.ts
+          python -m pip install javalang
+          python scripts/mobile-native-safety.py
           mkdir -p android/assets/www
           cp -r dist/* android/assets/www/
           ls -la android/assets/www/
@@ -53,6 +66,9 @@ jobs:
           ls -lh build_libs/
 
       - name: Compile & Sign Android APK
+        env:
+          ANDROID_SIGNING_KEYSTORE: ${{ secrets.ANDROID_SIGNING_KEYSTORE }}
+          ANDROID_SIGNING_PASSWORD: ${{ secrets.ANDROID_SIGNING_PASSWORD }}
         run: |
           set -e
           BUILD_TOOLS=$(ls -1 $ANDROID_HOME/build-tools | sort -V | tail -n 1)
@@ -99,32 +115,34 @@ jobs:
           "$BT_DIR/zipalign" -f -p 4 build_apk/unsigned.apk build_apk/aligned.apk
 
           echo "6. Signing APK..."
-          keytool -genkeypair -v \
-            -keystore build_apk/release.keystore \
-            -alias netcattykey \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -storepass netcatty123 \
-            -keypass netcatty123 \
-            -dname "CN=Netcatty Mate, OU=Mobile, O=Newaii, L=Cloud, S=Cloud, C=DE"
+          printf '%s' "$ANDROID_SIGNING_KEYSTORE" | base64 --decode > build_apk/release.p12
+          chmod 600 build_apk/release.p12
 
           "$BT_DIR/apksigner" sign \
-            --ks build_apk/release.keystore \
+            --ks build_apk/release.p12 \
             --ks-key-alias netcattykey \
-            --ks-pass pass:netcatty123 \
-            --key-pass pass:netcatty123 \
-            --out dist_apk/Netcatty-Mate-v3.0.1-Android.apk \
+            --ks-pass env:ANDROID_SIGNING_PASSWORD \
+            --key-pass env:ANDROID_SIGNING_PASSWORD \
+            --out dist_apk/Netcatty-Mate-v3.1.0-Android.apk \
             build_apk/aligned.apk
 
-          ls -lh dist_apk/Netcatty-Mate-v3.0.1-Android.apk
+          ls -lh dist_apk/Netcatty-Mate-v3.1.0-Android.apk
 
-      - name: Publish GitHub Release v3.0.1
+      - name: Verify APK signature and publish build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: netcatty-mate-android-v3.1.0
+          path: dist_apk/*.apk
+
+      - name: Verify signed APK
+        run: |
+          BUILD_TOOLS=$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)
+          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" verify --verbose dist_apk/Netcatty-Mate-v3.1.0-Android.apk
+
+      - name: Publish GitHub Release v3.1.0
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="v3.0.1"
-          gh release delete "$TAG" --yes || true
-          gh release create "$TAG" dist_apk/Netcatty-Mate-v3.0.1-Android.apk \
-            --title "Netcatty Mate v3.0.1 (修复启动黑屏 + 原版 Netcatty UI 移动版)" \
-            --notes "修复 v3.0.0 启动黑屏问题：1) 修复 AppLockGate 因 getAppLockRuntimeState 缺少 initialized:true 导致 shouldRenderAppLockGateChildren 返回 false 並在移除 Splash 后只渲染空节点的问题；2) 修复 usePluginThemeRuntime 中 getPluginThemes 返回结构与 ThemePackCatalog (selection.revision) 不一致导致的启动异常；3) 补全所有桌面 IPC 状态探测与监听器的安全桥接返回。"
+          gh release create "$GITHUB_REF_NAME" dist_apk/Netcatty-Mate-v3.1.0-Android.apk \
+            --verify-tag --title "Netcatty Mate v3.1.0" --notes-file android/RELEASE-v3.1.0.md

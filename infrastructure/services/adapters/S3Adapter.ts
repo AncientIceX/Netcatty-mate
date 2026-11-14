@@ -108,6 +108,9 @@ export class S3Adapter {
   }
 
   async upload(syncedFile: SyncedFile): Promise<string> {
+    if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+      throw new Error('Mobile cloud sync is download-only');
+    }
     if (!this.config) {
       throw new Error('Missing S3 config');
     }
@@ -156,6 +159,9 @@ export class S3Adapter {
   }
 
   async deleteSync(): Promise<void> {
+    if (typeof window !== 'undefined' && (window as any).__netcattyMobileMode) {
+      throw new Error('Mobile cloud sync is download-only');
+    }
     if (!this.config) {
       return;
     }

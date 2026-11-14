@@ -3,7 +3,27 @@ export type LocaleOption = {
   label: string;
 };
 
-export const DEFAULT_UI_LOCALE = 'en';
+const detectSystemDefaultLocale = (): string => {
+  try {
+    const navLang = typeof navigator !== 'undefined' ? String(navigator.language || '') : '';
+    const [language, ...subtags] = navLang.toLowerCase().split('-');
+    if (language === 'zh') {
+      // An explicit script takes precedence over the region (e.g. zh-Hans-TW).
+      if (subtags.includes('hans')) return 'zh-CN';
+      if (subtags.some(tag => ['tw', 'hk', 'mo', 'hant'].includes(tag))) {
+        return 'zh-TW';
+      }
+      return 'zh-CN';
+    }
+    if (language === 'es') return 'es';
+    if (language === 'ru') return 'ru';
+  } catch {
+    // ignore
+  }
+  return 'en';
+};
+
+export const DEFAULT_UI_LOCALE = detectSystemDefaultLocale();
 
 // Add new languages by appending to this list and providing message dictionaries.
 export const SUPPORTED_UI_LOCALES: LocaleOption[] = [
