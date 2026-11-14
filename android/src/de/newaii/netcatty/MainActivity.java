@@ -585,21 +585,7 @@ public class MainActivity extends Activity {
     }
 
     private void deleteSftpEntryChecked(ChannelSftp sftp, String path, int depth) throws Exception {
-        if (depth > 128) throw new java.io.IOException("Directory nesting too deep");
-        SftpATTRS attrs = sftp.lstat(path);
-        if (attrs.isDir() && !attrs.isLink()) {
-            @SuppressWarnings("unchecked")
-            Vector<ChannelSftp.LsEntry> entries = sftp.ls(path);
-            for (ChannelSftp.LsEntry entry : entries) {
-                String name = entry.getFilename();
-                if (".".equals(name) || "..".equals(name)) continue;
-                if (name.indexOf('/') >= 0) throw new java.io.IOException("Invalid directory entry");
-                deleteSftpEntryChecked(sftp, path + "/" + name, depth + 1);
-            }
-            sftp.rmdir(path);
-        } else {
-            sftp.rm(path);
-        }
+        SftpFiles.delete(sftp, path, depth);
     }
 
     private File resolveLocalFile(String rawPath) {
@@ -2292,7 +2278,7 @@ public class MainActivity extends Activity {
                                     ? sftp.getHome()
                                     : remotePath.trim();
                             @SuppressWarnings("unchecked")
-                            Vector<ChannelSftp.LsEntry> list = sftp.ls(targetDir);
+                            Vector<ChannelSftp.LsEntry> list = sftp.ls(SftpFiles.literal(targetDir));
                             JSONArray arr = new JSONArray();
                             if (list != null) {
                                 for (ChannelSftp.LsEntry entry : list) {
@@ -2307,7 +2293,7 @@ public class MainActivity extends Activity {
                                         type = "symlink";
                                         try {
                                             String fullPath = "/".equals(targetDir) ? ("/" + name) : (targetDir.replaceAll("/+$", "") + "/" + name);
-                                            SftpATTRS targetAttrs = sftp.stat(fullPath);
+                                            SftpATTRS targetAttrs = sftp.stat(SftpFiles.literal(fullPath));
                                             linkTarget = targetAttrs.isDir() ? "directory" : "file";
                                         } catch (Exception ignored) {
                                             linkTarget = "file";
@@ -2352,7 +2338,7 @@ public class MainActivity extends Activity {
                     try {
                         ChannelSftp sftp = ensureSftpChannel(sftpId);
                         synchronized (sftp) {
-                            SftpATTRS attrs = followLinks ? sftp.stat(remotePath) : sftp.lstat(remotePath);
+                            SftpATTRS attrs = followLinks ? sftp.stat(SftpFiles.literal(remotePath)) : sftp.lstat(SftpFiles.literal(remotePath));
                             JSONObject statObj = new JSONObject();
                             String name = new File(remotePath).getName();
                             statObj.put("name", name.isEmpty() ? "/" : name);
@@ -2424,7 +2410,7 @@ public class MainActivity extends Activity {
                         ChannelSftp sftp = ensureSftpChannel(sftpId);
                         ByteArrayOutputStream baos = new ByteArrayOutputStream();
                         synchronized (sftp) {
-                            try (InputStream is = sftp.get(remotePath)) {
+                            try (InputStream is = sftp.get(SftpFiles.literal(remotePath))) {
                             byte[] buf = new byte[16384];
                             int n;
                             int total = 0;
@@ -2466,13 +2452,9 @@ public class MainActivity extends Activity {
                         ChannelSftp sftp = ensureSftpChannel(sftpId);
                         synchronized (sftp) {
                         byte[] bytes = isBase64 ? Base64.decode(contentOrB64, Base64.DEFAULT) : contentOrB64.getBytes(StandardCharsets.UTF_8);
-                        String stagingPath = remotePath + ".netcatty-write-" + java.util.UUID.randomUUID().toString();
-                        try {
-                            try (InputStream input = new ByteArrayInputStream(bytes)) { sftp.put(input, stagingPath, ChannelSftp.OVERWRITE); }
-                            if (sftp.stat(stagingPath).getSize() != bytes.length) throw new java.io.IOException("Incomplete write");
-                            sftp.rename(stagingPath, remotePath);
-                        } finally {
-                            try { sftp.rm(stagingPath); } catch (Exception ignored) {}
+                        try (SftpFiles.Replacement replacement = new SftpFiles.Replacement(sftp, remotePath)) {
+                            try (InputStream input = new ByteArrayInputStream(bytes)) { sftp.put(input, SftpFiles.literal(replacement.staging), ChannelSftp.OVERWRITE); }
+                            replacement.commit(bytes.length);
                         }
                         }
                         JSONObject res = new JSONObject();
@@ -2545,7 +2527,7 @@ public class MainActivity extends Activity {
                     try {
                         ChannelSftp sftp = ensureSftpChannel(sftpId);
                         synchronized (sftp) {
-                        sftp.rename(oldPath, newPath);
+                        sftp.rename(SftpFiles.literal(oldPath), SftpFiles.literal(newPath));
                         }
                         JSONObject res = new JSONObject();
                         res.put("reqId", reqId); res.put("ok", true); res.put("success", true);
@@ -2570,7 +2552,7 @@ public class MainActivity extends Activity {
                         ChannelSftp sftp = ensureSftpChannel(sftpId);
                         synchronized (sftp) {
                         if (modeOctal == null || !modeOctal.matches("[0-7]{3,4}")) throw new IllegalArgumentException("Invalid octal mode");
-                        sftp.chmod(Integer.parseInt(modeOctal, 8), remotePath);
+                        sftp.chmod(Integer.parseInt(modeOctal, 8), SftpFiles.literal(remotePath));
                         }
                         JSONObject res = new JSONObject();
                         res.put("reqId", reqId); res.put("ok", true); res.put("success", true);
@@ -2597,7 +2579,8 @@ public class MainActivity extends Activity {
                         final File source = resolveLocalFile(localPath);
                         if (!source.isFile()) throw new java.io.IOException("Upload source is not a file");
                         final long startedAt = System.currentTimeMillis();
-                        final String uploadPath = remotePath + ".netcatty-upload-" + java.util.UUID.randomUUID().toString();
+                        try (SftpFiles.Replacement replacement = new SftpFiles.Replacement(sftp, remotePath)) {
+                        final String uploadPath = SftpFiles.literal(replacement.staging);
                         try {
                         try (InputStream input = new FileInputStream(source)) {
                             sftp.put(input, uploadPath, new SftpProgressMonitor() {
@@ -2617,9 +2600,10 @@ public class MainActivity extends Activity {
                                 @Override public void end() {}
                             }, ChannelSftp.OVERWRITE);
                         }
-                        if (Boolean.TRUE.equals(cancelledTransfers.remove(transferId))) throw new java.io.IOException("Upload cancelled");
-                        if (sftp.stat(uploadPath).getSize() != source.length()) throw new java.io.IOException("Incomplete upload");
-                        sftp.rename(uploadPath, remotePath);
+                        synchronized (cancelledTransfers) {
+                            if (Boolean.TRUE.equals(cancelledTransfers.get(transferId))) throw new java.io.IOException("Upload cancelled");
+                            replacement.commit(source.length());
+                        }
                         JSONObject event = new JSONObject();
                         event.put("type", "completed"); event.put("direction", "upload");
                         event.put("transferId", transferId); event.put("transferred", source.length());
@@ -2627,7 +2611,7 @@ public class MainActivity extends Activity {
                         emitToJs("sftp_transfer_event", event);
                         } finally {
                             cancelledTransfers.remove(transferId);
-                            try { sftp.rm(uploadPath); } catch (Exception ignored) {}
+                        }
                         }
                         }
                         JSONObject res = new JSONObject();
@@ -2663,7 +2647,7 @@ public class MainActivity extends Activity {
                         final String fileName = destFile.getName();
 
                         synchronized (sftp) {
-                            SftpATTRS attrs = sftp.stat(remotePath);
+                            SftpATTRS attrs = sftp.stat(SftpFiles.literal(remotePath));
                             final long totalBytes = Math.max(0L, attrs.getSize());
 
                             JSONObject startEv = new JSONObject();
@@ -2679,7 +2663,7 @@ public class MainActivity extends Activity {
                             emitToJs("sftp_transfer_event", startEv);
 
                             try (FileOutputStream fos = new FileOutputStream(stagingFile)) {
-                                sftp.get(remotePath, fos, new SftpProgressMonitor() {
+                                sftp.get(SftpFiles.literal(remotePath), fos, new SftpProgressMonitor() {
                                     private long transferred = 0;
                                     private long lastEmit = 0;
 

@@ -118,8 +118,10 @@ class SecuritySourceChecks(unittest.TestCase):
     def test_upload_stages_before_replace(self):
         text = method('sftpStreamUploadFromLocal')
         self.assertIn('sftp.put(input, uploadPath,', text)
-        self.assertIn('sftp.rename(uploadPath, remotePath)', text)
-        self.assertIn('sftp.rm(uploadPath)', text)
+        self.assertIn('replacement.commit(source.length())', text)
+        self.assertIn('try (SftpFiles.Replacement replacement', text)
+        self.assertIn('synchronized (cancelledTransfers)', text)
+        self.assertLess(text.index('cancelledTransfers.get(transferId)', text.index('synchronized (cancelledTransfers)')), text.index('replacement.commit('))
 
     def test_keystore_api(self):
         for name in ['credentialsAvailable', 'credentialsEncrypt', 'credentialsDecrypt']:

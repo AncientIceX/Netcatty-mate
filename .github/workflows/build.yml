@@ -66,6 +66,9 @@ jobs:
           curl -fsSL https://repo1.maven.org/maven2/org/bouncycastle/bcprov-jdk18on/1.79/bcprov-jdk18on-1.79.jar -o build_libs/bcprov.jar
           ls -lh build_libs/
 
+      - name: Execute native SFTP integration against loopback OpenSSH
+        run: bash scripts/mobile-sftp-integration.sh
+
       - name: Compile & Sign Android APK
         env:
           ANDROID_SIGNING_KEYSTORE: ${{ secrets.ANDROID_SIGNING_KEYSTORE }}
