@@ -21,6 +21,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js 24
         uses: actions/setup-node@v4
@@ -44,7 +46,20 @@ jobs:
           node scripts/patch-xterm-foreground-intense.cjs
           node scripts/patch-xterm-webgl-atlas.cjs
           node scripts/copy-monaco.cjs
+          npm install --no-save --package-lock=false --ignore-scripts playwright@1.58.2
+          npx playwright install --with-deps chromium
+          cp infrastructure/mobile/androidBridgePolyfill.ts "$RUNNER_TEMP/fixed-bridge.ts"
+          git show v3.1.1:infrastructure/mobile/androidBridgePolyfill.ts > infrastructure/mobile/androidBridgePolyfill.ts
+          if node scripts/mobile-startup-test.mjs > baseline-startup.log 2>&1; then
+            echo 'Regression did not detect v3.1.1'; exit 1
+          fi
+          cat baseline-startup.log
           npm run build
+          node scripts/mobile-boot-smoke.mjs --baseline
+          cp "$RUNNER_TEMP/fixed-bridge.ts" infrastructure/mobile/androidBridgePolyfill.ts
+          npm run build
+          node scripts/mobile-startup-test.mjs
+          node scripts/mobile-boot-smoke.mjs
           npx tsc --noEmit -p tsconfig.json > mobile-typecheck.log 2>&1 || true
           if grep -E '^(infrastructure/mobile/|components/cloud-sync/CloudSyncControls|components/CloudSyncSettings|components/sftp/SftpFileRow|components/sftp/SftpPaneTreeNode|infrastructure/persistence/localStorageAdapter|infrastructure/config/i18n|application/state/useAutoSync|infrastructure/services/adapters/)' mobile-typecheck.log; then
             cat mobile-typecheck.log
@@ -58,6 +73,15 @@ jobs:
           mkdir -p android/assets/www
           cp -r dist/* android/assets/www/
           ls -la android/assets/www/
+
+      - name: Upload boot regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-boot-smoke
+          path: |
+            boot-smoke-results/
+            baseline-startup.log
 
       - name: Download JSch 0.2.21 & BouncyCastle 1.79 Libraries
         run: |

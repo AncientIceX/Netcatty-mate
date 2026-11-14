@@ -2872,12 +2872,11 @@ export function installAndroidBridgePolyfill(): void {
     aiMcpUpdateLiveSessions: unsupportedMobile,
     aiMcpMergeSessions: unsupportedMobile,
     aiMcpUpdateAttachments: unsupportedMobile,
-    aiMcpSetCommandBlocklist: unsupportedMobile,
-    aiMcpSetCommandTimeout: unsupportedMobile,
-    aiMcpSetMaxIterations: unsupportedMobile,
-    aiMcpSetPermissionMode: unsupportedMobile,
-    aiMcpSetToolIntegrationMode: unsupportedMobile,
-    aiMcpSyncPermissionGrants: unsupportedMobile,
+    // No native MCP server exists on Android. Omit optional capability methods:
+    // useAIState/useAISettingsState publish initial safety settings without awaiting
+    // them, and useAIPermissionGrantsState does the same for grants. Advertising
+    // rejecting functions here creates unhandled rejections on every app boot.
+    // Do not return fake success for safety controls that cannot be enforced.
     onMcpApprovalRequest: () => () => {},
     onMcpApprovalCleared: () => () => {},
     respondMcpApproval: unsupportedMobile,
@@ -3032,7 +3031,8 @@ export function installAndroidBridgePolyfill(): void {
     externalMcpClaudeAdd: async () => ({ ok: false, error: 'Unsupported on Android' } as any),
     externalMcpGrokAdd: async () => ({ ok: false, error: 'Unsupported on Android' } as any),
     externalMcpGetUniversalSetupPrompt: async () => ({ ok: false, prompt: '' } as any),
-    setExternalMcpApprovalAlertMode: unsupportedMobile,
+    // Optional desktop notification policy publisher is absent on Android.
+    // ExternalMcpApprovalsHost checks presence before its fire-and-forget call.
 
     // System Temp / Crash Logs / Session Logs
     getTempDirInfo: async () => {
