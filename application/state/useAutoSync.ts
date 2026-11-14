@@ -608,7 +608,7 @@ export const useAutoSync = (config: AutoSyncConfig) => {
     getDataHashRef.current = getDataHash;
   }, [getDataHash]);
 
-  const refreshPendingLocalSync = useCallback(async (isCurrent = () => true) => {
+  const refreshPendingLocalSync = useCallback(async (isCurrent: () => boolean = () => true) => {
     if (
       (typeof window !== 'undefined' && (window as any).__netcattyMobileMode)
       || !enabled

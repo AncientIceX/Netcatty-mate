@@ -46,7 +46,7 @@ jobs:
           node scripts/copy-monaco.cjs
           npm run build
           npx tsc --noEmit -p tsconfig.json > mobile-typecheck.log 2>&1 || true
-          if grep -E '^(infrastructure/mobile/|android/|components/cloud-sync/CloudSyncControls|components/CloudSyncSettings|components/sftp/SftpFileRow|components/sftp/SftpPaneTreeNode|infrastructure/persistence/localStorageAdapter|infrastructure/config/i18n|application/state/useAutoSync|infrastructure/services/adapters/)' mobile-typecheck.log; then
+          if grep -A 12 -E '^(infrastructure/mobile/|android/|components/cloud-sync/CloudSyncControls|components/CloudSyncSettings|components/sftp/SftpFileRow|components/sftp/SftpPaneTreeNode|infrastructure/persistence/localStorageAdapter|infrastructure/config/i18n|application/state/useAutoSync|infrastructure/services/adapters/)' mobile-typecheck.log; then
             echo 'Mobile changes have TypeScript errors'; exit 1
           fi
           node --experimental-strip-types scripts/mobile-bridge-test.mjs

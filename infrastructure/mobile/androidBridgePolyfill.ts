@@ -1019,7 +1019,7 @@ export function installAndroidBridgePolyfill(): void {
     getDefaultShell: async () => '/system/bin/sh',
 
     discoverShells: async () => [
-      { id: 'sh', name: 'Android POSIX sh', path: '/system/bin/sh', args: ['-i'] },
+      { id: 'sh', name: 'Android POSIX sh', command: '/system/bin/sh', icon: 'terminal', args: ['-i'] },
     ],
 
     validatePath: async (path: string) => {
@@ -1197,7 +1197,7 @@ export function installAndroidBridgePolyfill(): void {
     // ── SSH Exec, CWD, Distro, Server Stats & Monitoring ──
     execCommand: async (options) => {
       const native = getNative();
-      if (!native) return { success: false, error: 'NativeBridge unavailable' };
+      if (!native) throw new Error('NativeBridge unavailable');
       try {
         const res = await callNativeAsync(
           (reqId) =>
@@ -1219,10 +1219,7 @@ export function installAndroidBridgePolyfill(): void {
           error: res?.error,
         };
       } catch (err) {
-        return {
-          success: false,
-          error: err instanceof Error ? err.message : String(err),
-        };
+        throw err instanceof Error ? err : new Error(String(err));
       }
     },
 
@@ -1386,7 +1383,7 @@ export function installAndroidBridgePolyfill(): void {
       }
     },
 
-    checkSshAgent: async () => ({ available: false }),
+    checkSshAgent: async () => ({ running: false, startupType: null, error: 'SSH agent unavailable on Android' }),
     getDefaultKeys: async () => [],
     readKnownHosts: async () => null,
 
@@ -1424,7 +1421,7 @@ export function installAndroidBridgePolyfill(): void {
 
     stopPortForward: async (tunnelId: string) => {
       getNative()?.stopSshPortForward(tunnelId);
-      return { success: true };
+      return { success: true, tunnelId };
     },
 
     getPortForwardStatus: async (tunnelId: string) => {
@@ -1432,7 +1429,7 @@ export function installAndroidBridgePolyfill(): void {
       const found = list.find((t: any) => t.tunnelId === tunnelId);
       return {
         tunnelId,
-        type: found?.type,
+        type: found?.type as 'local' | 'remote' | 'dynamic' | undefined,
         status: (found?.status || 'inactive') as 'connecting' | 'active' | 'error' | 'inactive',
         error: found?.error,
       };
@@ -2524,7 +2521,7 @@ export function installAndroidBridgePolyfill(): void {
     windowIsFullscreen: async () => true,
     windowFocus: async () => true,
     setTerminalKeyboardFocus: () => {},
-    setWindowTitle: async () => {},
+    setWindowTitle: async (title: string) => { document.title = title; return true; },
     onWindowFullScreenChanged: () => () => {},
     onWindowShown: () => () => {},
     onWindowFocusRequested: () => () => {},
@@ -2546,7 +2543,6 @@ export function installAndroidBridgePolyfill(): void {
       } else {
         window.dispatchEvent(new CustomEvent('netcatty:mobile:close-settings'));
       }
-      return true;
     },
 
     notifySettingsChanged: (payload) => {
@@ -2689,9 +2685,11 @@ export function installAndroidBridgePolyfill(): void {
       const native = getNative();
       if (native) {
         native.copyToClipboard(text);
-        return;
+        return true;
       }
-      await navigator.clipboard?.writeText?.(text);
+      if (!navigator.clipboard?.writeText) return false;
+      await navigator.clipboard.writeText(text);
+      return true;
     },
     readClipboardFiles: async () => [],
     readClipboardImage: async () => null,
