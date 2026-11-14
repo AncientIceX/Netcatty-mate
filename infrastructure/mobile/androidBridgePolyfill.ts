@@ -2641,7 +2641,7 @@ export function installAndroidBridgePolyfill(): void {
 
     getAppInfo: async () => ({
       name: 'Netcatty Mate Mobile',
-      version: '3.1.0',
+      version: '3.1.2',
       platform: 'android',
       arch: 'arm64-v8a',
       electron: 'Android WebView + JSch 0.2.21',

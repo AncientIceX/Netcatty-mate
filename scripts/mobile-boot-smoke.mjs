@@ -53,6 +53,7 @@ try {
     for(const file of await readdir('dist/assets')){
       if(!/^(index-|TerminalLayer-).*\.js$/.test(file))continue;
       const lines=(await readFile('dist/assets/'+file,'utf8')).split('\n');
+      if(!lines.some(line=>line.includes('function Xwe()')) && !file.startsWith('TerminalLayer-')) continue;
       for(const [line,col] of file.startsWith('index-')?[[116,8943],[116,9367],[116,9374],[158,15458]]:[[4,322325],[4,322390],[4,322450],[4,322564],[4,322654]]) console.log('STACK CALLSITE',file,line,col,lines[line-1]?.slice(Math.max(0,col-90),col+100));
     }
   }else{
