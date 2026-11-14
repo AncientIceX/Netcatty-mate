@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT=$(mktemp -d "${RUNNER_TEMP:?}/netcatty-sftp.XXXXXX")
 SSHD_PID=""
 cleanup() {
+  result=$?
+  if [ "$result" -ne 0 ] && [ -f "$ROOT/sshd.log" ]; then sudo cat "$ROOT/sshd.log"; fi
   if [ -n "$SSHD_PID" ]; then sudo kill "$SSHD_PID" 2>/dev/null || true; fi
   sudo rm -rf "$ROOT"
 }
@@ -19,7 +21,7 @@ printf 'foreign original' > "$ROOT/files/foreign-owner"
 chmod 644 "$ROOT/files/foreign-owner"
 sudo chown 65534:65534 "$ROOT/files/foreign-owner"
 PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
-printf 'Port %s\nListenAddress 127.0.0.1\nHostKey %s/host\nPidFile %s/sshd.pid\nAuthorizedKeysFile %s/authorized_keys\nStrictModes no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM no\nAllowUsers %s\nSubsystem sftp internal-sftp\n' "$PORT" "$ROOT" "$ROOT" "$ROOT" "$(id -un)" > "$ROOT/sshd_config"
+printf 'Port %s\nListenAddress 127.0.0.1\nHostKey %s/host\nPidFile %s/sshd.pid\nAuthorizedKeysFile %s/authorized_keys\nStrictModes no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nUsePAM yes\nAllowUsers %s\nSubsystem sftp internal-sftp\n' "$PORT" "$ROOT" "$ROOT" "$ROOT" "$(id -un)" > "$ROOT/sshd_config"
 sudo mkdir -p /run/sshd
 sudo /usr/sbin/sshd -f "$ROOT/sshd_config" -E "$ROOT/sshd.log"
 SSHD_PID=$(sudo cat "$ROOT/sshd.pid")
