@@ -16,7 +16,7 @@ permissions:
 jobs:
   build-android:
     name: Build & Sign Netcatty Mate Android APK
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - name: Checkout repository
@@ -46,8 +46,9 @@ jobs:
           node scripts/patch-xterm-foreground-intense.cjs
           node scripts/patch-xterm-webgl-atlas.cjs
           node scripts/copy-monaco.cjs
-          npm install --no-save --package-lock=false --ignore-scripts playwright@1.58.2
-          npx playwright install --with-deps chromium
+          npm install --prefix "$RUNNER_TEMP/boot-tools" --ignore-scripts playwright@1.58.2
+          export PLAYWRIGHT_MODULE="$RUNNER_TEMP/boot-tools/node_modules/playwright/index.mjs"
+          "$RUNNER_TEMP/boot-tools/node_modules/.bin/playwright" install --with-deps chromium
           cp infrastructure/mobile/androidBridgePolyfill.ts "$RUNNER_TEMP/fixed-bridge.ts"
           git show v3.1.1:infrastructure/mobile/androidBridgePolyfill.ts > infrastructure/mobile/androidBridgePolyfill.ts
           if node scripts/mobile-startup-test.mjs > baseline-startup.log 2>&1; then
