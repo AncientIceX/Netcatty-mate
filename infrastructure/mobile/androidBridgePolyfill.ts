@@ -495,6 +495,14 @@ export function installAndroidBridgePolyfill(): void {
   const aiStreamEndListeners = new Map<string, Set<() => void>>();
   const aiStreamErrorListeners = new Map<string, Set<(err: string) => void>>();
   const pasteWriteListeners = new Set<(payload: any) => void>();
+  const pendingPasteWrites = new Map<string, Set<number>>();
+
+  function cancelPendingPasteWrites(sessionId: string) {
+    const timers = pendingPasteWrites.get(sessionId);
+    pendingPasteWrites.delete(sessionId);
+    timers?.forEach(timer => window.clearTimeout(timer));
+    timers?.clear();
+  }
 
   const sftpLeases = new Map<string, Set<string>>();
   const deferredSftpClose = new Set<string>();
@@ -619,6 +627,7 @@ export function installAndroidBridgePolyfill(): void {
     if (eventType === 'terminal_error') {
       const reqId = payload?.reqId;
       const sessionId = payload?.sessionId;
+      if (sessionId) cancelPendingPasteWrites(sessionId);
       const errorMsg = payload?.error || 'Connection error';
       if (reqId && pendingConnects.has(reqId)) {
         const pending = pendingConnects.get(reqId)!;
@@ -649,6 +658,7 @@ export function installAndroidBridgePolyfill(): void {
     if (eventType === 'terminal_exit') {
       const sessionId = payload?.sessionId;
       if (sessionId) {
+        cancelPendingPasteWrites(sessionId);
         sessionDecoders.delete(sessionId);
         const set = exitListeners.get(sessionId);
         set?.forEach((cb) => {
@@ -934,6 +944,7 @@ export function installAndroidBridgePolyfill(): void {
         throw new Error('Android NativeBridge is not available');
       }
       sessionBacklog.delete(sessionId);
+      cancelPendingPasteWrites(sessionId);
       return new Promise<string>((resolve, reject) => {
         const reqId = nextReqId('ssh-conn');
         const timer = window.setTimeout(() => {
@@ -1036,8 +1047,17 @@ export function installAndroidBridgePolyfill(): void {
       const lineDelayMs = Number(options?.lineDelayMs);
       if (Number.isFinite(lineDelayMs) && lineDelayMs > 0 && data.includes('\n')) {
         const lines = data.replace(/\r\n/g, '\n').split('\n');
+        let timers = pendingPasteWrites.get(sessionId);
+        if (!timers) {
+          timers = new Set<number>();
+          pendingPasteWrites.set(sessionId, timers);
+        }
+        const batchTimers = timers;
         lines.forEach((line, idx) => {
-          window.setTimeout(() => {
+          const timer = window.setTimeout(() => {
+            // A cancelled callback may already be queued by the WebView event loop.
+            if (!batchTimers.delete(timer)) return;
+            if (batchTimers.size === 0) pendingPasteWrites.delete(sessionId);
             const payload = idx < lines.length - 1 ? `${line}\r` : line;
             if (payload) {
               native.writeTerminalBytesB64(sessionId, utf8ToB64(payload));
@@ -1055,6 +1075,7 @@ export function installAndroidBridgePolyfill(): void {
               });
             }
           }, idx * lineDelayMs);
+          batchTimers.add(timer);
         });
         return;
       }
@@ -1083,6 +1104,7 @@ export function installAndroidBridgePolyfill(): void {
     },
 
     interruptSession: (sessionId: string, _trace?: any, options?: { cancelPendingWritesOnly?: boolean }) => {
+      cancelPendingPasteWrites(sessionId);
       if (options?.cancelPendingWritesOnly) return;
       const native = getNative();
       if (native && sessionId) {
@@ -1110,6 +1132,7 @@ export function installAndroidBridgePolyfill(): void {
 
     closeSession: (sessionId: string) => {
       const native = getNative();
+      cancelPendingPasteWrites(sessionId);
       sessionBacklog.delete(sessionId);
       sessionDecoders.delete(sessionId);
       if (native && sessionId) {
@@ -1123,21 +1146,39 @@ export function installAndroidBridgePolyfill(): void {
       if (!dataListeners.has(sessionId)) {
         dataListeners.set(sessionId, new Set());
       }
-      dataListeners.get(sessionId)!.add(cb);
+      let active = true;
+      let replaying = Boolean(options?.replayBacklog && sessionBacklog.has(sessionId));
+      const queued: Array<[string, any]> = [];
+      const listener = (data: string, meta?: any) => {
+        if (!active) return;
+        if (replaying) queued.push([data, meta]);
+        else cb(data, meta);
+      };
+      dataListeners.get(sessionId)!.add(listener);
       if (options?.replayBacklog && sessionBacklog.has(sessionId)) {
         const backlog = sessionBacklog.get(sessionId)!;
         sessionBacklog.delete(sessionId);
         if (backlog) {
           queueMicrotask(() => {
+            if (!active) return;
             try {
               cb(backlog, undefined);
             } catch {}
+            // Replay first; output arriving between subscribe and this microtask
+            // must not overtake it and corrupt the terminal's escape sequences.
+            while (active && queued.length) {
+              const [data, meta] = queued.shift()!;
+              try { cb(data, meta); } catch {}
+            }
+            replaying = false;
           });
-        }
+        } else replaying = false;
       }
       return () => {
+        active = false;
+        queued.length = 0;
         const set = dataListeners.get(sessionId);
-        set?.delete(cb);
+        set?.delete(listener);
         if (set && set.size === 0) dataListeners.delete(sessionId);
       };
     },

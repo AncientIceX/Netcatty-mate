@@ -100,4 +100,56 @@ await test('native failure rejects SFTP mutation rather than resolving success',
  const original=native.sftpMkdir; native.sftpMkdir=(id)=>event('async_response',{reqId:id,ok:false,success:false,error:'permission denied'});
  await assert.rejects(bridge.mkdirSftp('s','/denied'), /permission denied/); native.sftpMkdir=original;
 });
+await test('paced paste cancellation prevents queued commands without sending Ctrl-C', async () => {
+ const original=native.writeTerminalBytesB64;
+ native.writeTerminalBytesB64=(sid,data)=>calls.push(['write',sid,Buffer.from(data,'base64').toString()]);
+ const before=calls.length;
+ bridge.writeToSession('paste-cancel','first\nsecond\nthird',{lineDelayMs:100,pasteRequestId:'p'});
+ bridge.interruptSession('paste-cancel',undefined,{cancelPendingWritesOnly:true});
+ const queued=[...timers.entries()].filter(([,t])=>t.ms===0||t.ms===100||t.ms===200);
+ for(const [id,t] of queued) { timers.delete(id); t.fn(); }
+ assert.deepEqual(calls.slice(before),[]);
+ native.writeTerminalBytesB64=original;
+});
+await test('closing terminal discards paced paste rather than writing to replacement session', async () => {
+ const original=native.writeTerminalBytesB64;
+ native.writeTerminalBytesB64=(sid,data)=>calls.push(['write',sid,data]);
+ bridge.writeToSession('paste-close','old\ncommand',{lineDelayMs:100});
+ bridge.closeSession('paste-close');
+ const before=calls.length;
+ for(const [id,t] of [...timers]) if(t.ms===0||t.ms===100) { timers.delete(id); t.fn(); }
+ assert.deepEqual(calls.slice(before),[]);
+ native.writeTerminalBytesB64=original;
+});
+await test('paced paste completes normally and interrupt/exit/error cancel only the target session', async () => {
+ const original=native.writeTerminalBytesB64;
+ native.writeTerminalBytesB64=(sid,data)=>calls.push(['write',sid,Buffer.from(data,'base64').toString()]);
+ const acknowledgements=[]; const off=bridge.onTerminalPasteWrite(p=>acknowledgements.push(p));
+ const before=calls.length;
+ bridge.writeToSession('normal-paste','one\ntwo',{lineDelayMs:50,pasteRequestId:'normal'});
+ for(const [id,t] of [...timers]) if(t.ms===0||t.ms===50) { timers.delete(id); t.fn(); }
+ assert.deepEqual(calls.slice(before),[['write','normal-paste','one\r'],['write','normal-paste','two']]);
+ assert.deepEqual(acknowledgements.map(p=>p.done),[false,true]);
+ off();
+ for(const mode of ['interrupt','terminal_exit','terminal_error']) {
+  const sid='paste-'+mode;
+  bridge.writeToSession(sid,'stop\nlater',{lineDelayMs:50});
+  const queued=[...timers.entries()].filter(([,t])=>t.ms===0||t.ms===50);
+  if(mode==='interrupt') bridge.interruptSession(sid); else event(mode,{sessionId:sid,error:'disconnected'});
+  const count=calls.length;
+  for(const [id,t] of queued) { timers.delete(id); t.fn(); }
+  assert.equal(calls.length,count);
+  if(mode==='interrupt') assert.deepEqual(calls.at(-1),['write',sid,'\x03']);
+ }
+ native.writeTerminalBytesB64=original;
+});
+await test('backlog stays before live output and unsubscribe suppresses deferred replay', async () => {
+ win.__onTerminalBytesB64('ordered',Buffer.from('old').toString('base64'));
+ const values=[]; const off=bridge.onSessionData('ordered',v=>values.push(v),{replayBacklog:true});
+ win.__onTerminalBytesB64('ordered',Buffer.from('new').toString('base64'));
+ await Promise.resolve(); assert.equal(values.join(''),'oldnew'); off();
+ win.__onTerminalBytesB64('unsub-replay',Buffer.from('stale').toString('base64'));
+ const stale=[]; const unsubscribe=bridge.onSessionData('unsub-replay',v=>stale.push(v),{replayBacklog:true});
+ unsubscribe(); const count=stale.length; await Promise.resolve(); assert.equal(stale.length,count);
+});
 console.log(`PASS ${tests} mobile bridge runtime suites`);
