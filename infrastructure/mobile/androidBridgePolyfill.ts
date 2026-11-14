@@ -925,7 +925,7 @@ export function installAndroidBridgePolyfill(): void {
 
   // Build the complete `window.netcatty` bridge implementation
   // Legacy renderer aliases may coexist; every declared desktop method remains checked.
-  const bridge: NetcattyBridge & Record<string, unknown> = {
+  const bridge: Partial<NetcattyBridge> & Record<string, unknown> = {
     // ── SSH / Terminal Sessions ──
     startSSHSession: async (options: NetcattySSHOptions): Promise<string> => {
       const native = getNative();
@@ -3078,7 +3078,7 @@ export function installAndroidBridgePolyfill(): void {
     onOpenSessionInNewWindow: () => () => {},
     onTerminalPopupConfig: () => () => {},
     onTerminalPopupPrepareClose: () => () => {},
-    markAttachPopupClosePrepared: () => {},
+    markAttachPopupClosePrepared: unsupportedMobile,
     onTerminalSessionSnapshotRequest: () => () => {},
     onTerminalSessionApplySnapshot: () => () => {},
     requestTerminalSessionSnapshot: async () => null as any,
@@ -3224,5 +3224,5 @@ export function installAndroidBridgePolyfill(): void {
   // Validate extra methods too; unknown legacy aliases do not erase known contracts.
   const checkedExtra: Partial<NetcattyBridge> & Record<string, unknown> = extraBridgeMethods;
   Object.assign(bridge, checkedExtra);
-  window.netcatty = bridge;
+  window.netcatty = Object.assign(bridge, checkedExtra) as NetcattyBridge;
 }
