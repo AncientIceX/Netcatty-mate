@@ -1,6 +1,8 @@
 package de.newaii.netcatty;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.DialogInterface;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -364,8 +366,10 @@ public class MainActivity extends Activity {
                     File dlDir = new File(home, "Downloads");
                     if (!dlDir.exists()) dlDir.mkdirs();
                     File knownHosts = new File(sshDir, "known_hosts");
-                    if (!knownHosts.exists()) {
-                        writeTextFile(knownHosts, "# Netcatty Mate Android SSH known_hosts\n");
+                    synchronized (hostKeyFileLock) {
+                        if (!knownHosts.exists()) {
+                            writeTextFile(knownHosts, "# Netcatty Mate Android SSH known_hosts\n");
+                        }
                     }
                     File readme = new File(dlDir, "README-Netcatty-Mobile.txt");
                     if (!readme.exists()) {
@@ -964,7 +968,132 @@ public class MainActivity extends Activity {
         }
     }
 
+    private final Object hostKeyFileLock = new Object();
+
+    /** Only the SSH worker waits; Android UI callbacks never perform SSH or disk I/O. */
+    private boolean confirmHostKey(final String host, final com.jcraft.jsch.HostKey key,
+                                   final boolean changed) throws Exception {
+        if (Looper.myLooper() == Looper.getMainLooper()) return false;
+        final String fingerprint = "SHA256:" + Base64.encodeToString(
+                MessageDigest.getInstance("SHA-256").digest(Base64.decode(key.getKey(), Base64.DEFAULT)),
+                Base64.NO_WRAP | Base64.NO_PADDING);
+        final java.util.concurrent.CountDownLatch decision = new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.atomic.AtomicBoolean accepted = new java.util.concurrent.atomic.AtomicBoolean(false);
+        final java.util.concurrent.atomic.AtomicBoolean expired = new java.util.concurrent.atomic.AtomicBoolean(false);
+        final AlertDialog[] dialog = new AlertDialog[1];
+        mainHandler.post(new Runnable() {
+            @Override public void run() {
+                if (expired.get() || isFinishing() || isDestroyed()) {
+                    decision.countDown();
+                    return;
+                }
+                try {
+                    String warning = changed
+                            ? "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!\n\n"
+                              + "This may be a man-in-the-middle attack. Do not continue unless you have independently verified the new fingerprint with your administrator.\n\n"
+                            : "This server is not yet trusted. Verify this fingerprint with your administrator before connecting.\n\n";
+                    dialog[0] = new AlertDialog.Builder(MainActivity.this)
+                            .setTitle(changed ? "SSH host key changed — connection blocked" : "Trust SSH server?")
+                            .setMessage(warning + "Host: " + host + "\nKey type: " + key.getType()
+                                    + "\nFingerprint: " + fingerprint)
+                            .setNegativeButton("Cancel", new DialogInterface.OnClickListener() {
+                                @Override public void onClick(DialogInterface d, int which) { decision.countDown(); }
+                            })
+                            .setPositiveButton(changed ? "Replace trusted key" : "Trust and connect", new DialogInterface.OnClickListener() {
+                                @Override public void onClick(DialogInterface d, int which) {
+                                    if (!expired.get()) accepted.set(true);
+                                    decision.countDown();
+                                }
+                            })
+                            .setOnCancelListener(new DialogInterface.OnCancelListener() {
+                                @Override public void onCancel(DialogInterface d) { decision.countDown(); }
+                            }).create();
+                    dialog[0].setOnDismissListener(new DialogInterface.OnDismissListener() {
+                        @Override public void onDismiss(DialogInterface d) { decision.countDown(); }
+                    });
+                    dialog[0].setCanceledOnTouchOutside(false);
+                    dialog[0].show();
+                    // Keyboard/DPAD Enter defaults to the safe action, especially on changed keys.
+                    dialog[0].getButton(AlertDialog.BUTTON_NEGATIVE).requestFocus();
+                } catch (RuntimeException e) {
+                    decision.countDown();
+                }
+            }
+        });
+        try {
+            return decision.await(90, java.util.concurrent.TimeUnit.SECONDS) && accepted.get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        } finally {
+            expired.set(true);
+            mainHandler.post(new Runnable() {
+                @Override public void run() { if (dialog[0] != null) dialog[0].dismiss(); }
+            });
+        }
+    }
+
+    private final class ConfirmingHostKeyRepository implements com.jcraft.jsch.HostKeyRepository {
+        private final File file;
+        private com.jcraft.jsch.HostKeyRepository delegate;
+
+        ConfirmingHostKeyRepository(JSch owner, File file) {
+            this.file = file;
+            this.delegate = owner.getHostKeyRepository();
+        }
+
+        private void reload() throws Exception {
+            // Fresh repository avoids overwriting another concurrently confirmed server's key.
+            JSch reader = new JSch();
+            reader.setKnownHosts(file.getAbsolutePath());
+            delegate = reader.getHostKeyRepository();
+        }
+
+        @Override public int check(String host, byte[] keyBytes) {
+            if (Looper.myLooper() == Looper.getMainLooper()) return NOT_INCLUDED;
+            try {
+                final int initial;
+                synchronized (hostKeyFileLock) {
+                    reload();
+                    initial = delegate.check(host, keyBytes);
+                }
+                if (initial == OK) return OK;
+                if (initial != NOT_INCLUDED && initial != CHANGED) return initial;
+                com.jcraft.jsch.HostKey key = new com.jcraft.jsch.HostKey(host, keyBytes);
+                if (!confirmHostKey(host, key, initial == CHANGED)) return initial;
+                synchronized (hostKeyFileLock) {
+                    reload();
+                    int current = delegate.check(host, keyBytes);
+                    if (current == OK) return OK;
+                    // A key changed while the first-connect prompt was open: require a new warning.
+                    if (current != initial) return current;
+                    if (current == CHANGED) delegate.remove(host, key.getType());
+                    delegate.add(key, null);
+                    // JSch add() can swallow file-write errors: require persisted trust before auth.
+                    reload();
+                    return delegate.check(host, keyBytes) == OK ? OK : NOT_INCLUDED;
+                }
+            } catch (Exception e) {
+                return NOT_INCLUDED;
+            }
+        }
+
+        @Override public void add(com.jcraft.jsch.HostKey key, UserInfo info) {
+            // JSch must not bypass the explicit confirmation performed in check().
+        }
+        @Override public void remove(String host, String type) { }
+        @Override public void remove(String host, String type, byte[] key) { }
+        @Override public String getKnownHostsRepositoryID() { return file.getAbsolutePath(); }
+        @Override public com.jcraft.jsch.HostKey[] getHostKey() { return delegate.getHostKey(); }
+        @Override public com.jcraft.jsch.HostKey[] getHostKey(String host, String type) {
+            return delegate.getHostKey(host, type);
+        }
+    }
+
     private Session dialSingleJschSession(JSONObject cfg, String overrideHost, int overridePort) throws Exception {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            throw new IllegalStateException("SSH connections must run on a worker thread");
+        }
         String hostname = (overrideHost != null && !overrideHost.isEmpty())
                 ? overrideHost
                 : cfg.optString("hostname", "").trim();
@@ -1033,26 +1162,50 @@ public class MainActivity extends Activity {
         }
 
         Properties config = new Properties();
-        // Fail closed: only explicitly trusted keys may authenticate this server.
-        File knownHostsFile = new File(new File(getFilesDir(), ".ssh"), "known_hosts");
-        if (knownHostsFile.isFile()) jsch.setKnownHosts(knownHostsFile.getAbsolutePath());
-        JSONArray trustedHosts = cfg.optJSONArray("knownHosts");
-        if (trustedHosts != null) {
-            for (int i = 0; i < trustedHosts.length(); i++) {
-                JSONObject trusted = trustedHosts.optJSONObject(i);
-                if (trusted == null) continue;
-                String trustedName = trusted.optString("hostname", "");
-                String originalHost = cfg.optString("hostname", cfg.optString("host", ""));
-                int originalPort = cfg.optInt("port", cfg.optInt("sshPort", 22));
-                if (!trustedName.equals(originalHost) || trusted.optInt("port", 22) != originalPort) continue;
-                byte[] key = Base64.decode(trusted.optString("publicKey", ""), Base64.DEFAULT);
-                String alias = originalPort == 22 ? originalHost : "[" + originalHost + "]:" + originalPort;
-                jsch.getHostKeyRepository().add(new com.jcraft.jsch.HostKey(alias, key), null);
-            }
-        }
-        String originalHost = cfg.optString("hostname", cfg.optString("host", hostname));
+        // Trust uses the real destination, never a loopback endpoint used by jump forwarding.
+        String originalHost = cfg.optString("hostname", "").trim();
+        if (originalHost.isEmpty()) originalHost = cfg.optString("host", cfg.optString("sshHost", hostname)).trim();
         int originalPort = cfg.optInt("port", cfg.optInt("sshPort", 22));
-        session.setHostKeyAlias(originalPort == 22 ? originalHost : "[" + originalHost + "]:" + originalPort);
+        String alias = originalPort == 22 ? originalHost : "[" + originalHost + "]:" + originalPort;
+        File knownHostsFile = new File(new File(getFilesDir(), ".ssh"), "known_hosts");
+        synchronized (hostKeyFileLock) {
+            File sshDirectory = knownHostsFile.getParentFile();
+            if (!sshDirectory.isDirectory() && !sshDirectory.mkdirs()) {
+                throw new java.io.IOException("Cannot create SSH trust directory");
+            }
+            if (!knownHostsFile.exists() && !knownHostsFile.createNewFile()) {
+                throw new java.io.IOException("Cannot create SSH known_hosts");
+            }
+            jsch.setKnownHosts(knownHostsFile.getAbsolutePath());
+            JSONArray trustedHosts = cfg.optJSONArray("knownHosts");
+            if (trustedHosts != null) {
+                for (int i = 0; i < trustedHosts.length(); i++) {
+                    JSONObject trusted = trustedHosts.optJSONObject(i);
+                    if (trusted == null) continue;
+                    // domain/models/history.ts KnownHost: hostname, port, keyType, publicKey.
+                    String trustedName = trusted.optString("hostname", "").trim();
+                    if ((!trustedName.equals(originalHost) && !trustedName.equals(alias))
+                            || trusted.optInt("port", 22) != originalPort) continue;
+                    try {
+                        String publicKey = trusted.optString("publicKey", "").trim();
+                        String keyType = trusted.optString("keyType", "");
+                        // Fingerprint-only records are not usable public keys; prompt instead.
+                        if (publicKey.isEmpty() || publicKey.startsWith("SHA256:") || publicKey.startsWith("MD5:")) continue;
+                        String[] fields = publicKey.split("\\s+");
+                        byte[] keyBytes = Base64.decode(fields.length >= 2 ? fields[1] : fields[0], Base64.DEFAULT);
+                        com.jcraft.jsch.HostKey trustedKey = new com.jcraft.jsch.HostKey(alias, keyBytes);
+                        if (!trustedKey.getType().equals(keyType)) continue;
+                        com.jcraft.jsch.HostKeyRepository repository = jsch.getHostKeyRepository();
+                        // Local confirmed keys take precedence over stale imported trust records.
+                        if (repository.getHostKey(alias, trustedKey.getType()).length == 0) repository.add(trustedKey, null);
+                    } catch (Exception invalidRecord) {
+                        // Malformed imports cannot disable first-connect confirmation.
+                    }
+                }
+            }
+            jsch.setHostKeyRepository(new ConfirmingHostKeyRepository(jsch, knownHostsFile));
+        }
+        session.setHostKeyAlias(alias);
         config.put("StrictHostKeyChecking", "yes");
         config.put("PreferredAuthentications", "publickey,keyboard-interactive,password");
         if (legacyAlgorithms) {

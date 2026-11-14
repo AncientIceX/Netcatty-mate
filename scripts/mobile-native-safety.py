@@ -52,6 +52,37 @@ class SecuritySourceChecks(unittest.TestCase):
         self.assertIn('config.put("StrictHostKeyChecking", "yes")', MAIN)
         self.assertNotIn('"StrictHostKeyChecking", "no"', MAIN)
         self.assertIn('return false;', method('promptYesNo'))
+        dial = method('dialSingleJschSession')
+        self.assertIn('SSH connections must run on a worker thread', dial)
+        self.assertIn('setHostKeyRepository(new ConfirmingHostKeyRepository', dial)
+        self.assertIn('session.setHostKeyAlias(alias)', dial)
+        for field in ['hostname', 'port', 'keyType', 'publicKey']:
+            self.assertIn('trusted.opt', dial)
+            self.assertIn('"' + field + '"', dial)
+        self.assertIn('repository.getHostKey(alias, trustedKey.getType()).length == 0', dial)
+
+    def test_host_key_confirmation_is_explicit_and_bounded(self):
+        text = method('confirmHostKey')
+        for part in ['Looper.myLooper() == Looper.getMainLooper()', 'mainHandler.post(',
+                     'new AlertDialog.Builder(MainActivity.this)', '"SHA256:"',
+                     'MessageDigest.getInstance("SHA-256")', 'Base64.NO_PADDING',
+                     'CountDownLatch(1)', 'AtomicBoolean(false)',
+                     'decision.await(90, java.util.concurrent.TimeUnit.SECONDS)',
+                     'REMOTE HOST IDENTIFICATION HAS CHANGED', 'man-in-the-middle',
+                     '.setNegativeButton("Cancel"', 'BUTTON_NEGATIVE).requestFocus()',
+                     '.setOnCancelListener(', '.setOnDismissListener(',
+                     'expired.set(true)', 'Thread.currentThread().interrupt()', 'dialog[0].dismiss()']:
+            self.assertIn(part, text)
+        check = method('check')
+        for part in ['initial = delegate.check(host, keyBytes)', 'if (initial == OK) return OK',
+                     'initial != NOT_INCLUDED && initial != CHANGED',
+                     '!confirmHostKey(host, key, initial == CHANGED)',
+                     'if (current != initial) return current',
+                     'delegate.remove(host, key.getType())', 'delegate.add(key, null)',
+                     'synchronized (hostKeyFileLock)', 'reload();', 'return NOT_INCLUDED;']:
+            self.assertIn(part, check)
+        self.assertLess(check.index('!confirmHostKey('), check.index('delegate.add('))
+        self.assertLess(check.index('delegate.add('), check.rindex('reload();'))
 
     def test_otp_fails_closed(self):
         text = method('promptKeyboardInteractive')
