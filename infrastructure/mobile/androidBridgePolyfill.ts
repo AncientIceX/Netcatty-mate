@@ -809,7 +809,7 @@ export function installAndroidBridgePolyfill(): void {
         const timer = window.setTimeout(() => {
           pendingConnects.delete(reqId);
           reject(new Error('Monitor SSH connection timeout'));
-        }, 16000);
+        }, 120000);
         pendingConnects.set(reqId, { sessionId: entry.sessionId, resolve, reject, timer });
         native.connectSshSession(
           reqId,
@@ -938,8 +938,9 @@ export function installAndroidBridgePolyfill(): void {
         const reqId = nextReqId('ssh-conn');
         const timer = window.setTimeout(() => {
           pendingConnects.delete(reqId);
-          reject(new Error('SSH connection timed out (20s)'));
-        }, 20000);
+          reject(new Error('SSH connection timed out while connecting or awaiting host trust'));
+          native.closeSession(sessionId);
+        }, 120000);
         pendingConnects.set(reqId, { sessionId, resolve, reject, timer });
         native.connectSshSession(
           reqId,
@@ -966,7 +967,7 @@ export function installAndroidBridgePolyfill(): void {
               sessionId,
             }),
           ),
-        18000,
+        120000,
       );
       if (!res?.ok) {
         throw new Error(res?.error || 'SSH connection test failed');
@@ -1209,7 +1210,7 @@ export function installAndroidBridgePolyfill(): void {
               options.timeout || 15000,
               '',
             ),
-          (options.timeout || 15000) + 5000,
+          (options.timeout || 15000) + 100000,
         );
         return {
           success: Boolean(res?.success),
@@ -1403,7 +1404,7 @@ export function installAndroidBridgePolyfill(): void {
         };
         const res = await callNativeAsync(
           (reqId) => native.startSshPortForward(reqId, JSON.stringify(normalized)),
-          20000,
+          120000,
         );
         return {
           success: Boolean(res?.success),
@@ -1509,7 +1510,7 @@ export function installAndroidBridgePolyfill(): void {
             options.sourceSessionId || '',
             JSON.stringify(options),
           ),
-        18000,
+        120000,
       );
       if (!res?.ok) throw new Error(res?.error || 'Failed to open SFTP session');
       return sftpId;
@@ -1527,7 +1528,7 @@ export function installAndroidBridgePolyfill(): void {
             sessionId,
             JSON.stringify(options || {}),
           ),
-        18000,
+        120000,
       );
       if (!res?.ok) throw new Error(res?.error || 'Failed to open SFTP for session');
       return sftpId;
