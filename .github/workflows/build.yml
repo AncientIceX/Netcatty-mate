@@ -127,26 +127,26 @@ jobs:
             --ks-key-alias netcattykey \
             --ks-pass env:ANDROID_SIGNING_PASSWORD \
             --key-pass env:ANDROID_SIGNING_PASSWORD \
-            --out dist_apk/Netcatty-Mate-v3.1.0-Android.apk \
+            --out dist_apk/Netcatty-Mate-v3.1.1-Android.apk \
             build_apk/aligned.apk
 
-          ls -lh dist_apk/Netcatty-Mate-v3.1.0-Android.apk
+          ls -lh dist_apk/Netcatty-Mate-v3.1.1-Android.apk
 
       - name: Verify APK signature and publish build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: netcatty-mate-android-v3.1.0
+          name: netcatty-mate-android-v3.1.1
           path: dist_apk/*.apk
 
       - name: Verify signed APK
         run: |
           BUILD_TOOLS=$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)
-          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" verify --verbose dist_apk/Netcatty-Mate-v3.1.0-Android.apk
+          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" verify --verbose dist_apk/Netcatty-Mate-v3.1.1-Android.apk
 
-      - name: Publish GitHub Release v3.1.0
+      - name: Publish GitHub Release v3.1.1
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist_apk/Netcatty-Mate-v3.1.0-Android.apk \
-            --verify-tag --title "Netcatty Mate v3.1.0" --notes-file android/RELEASE-v3.1.0.md
+          gh release create "$GITHUB_REF_NAME" dist_apk/Netcatty-Mate-v3.1.1-Android.apk \
+            --verify-tag --title "Netcatty Mate v3.1.1" --notes-file android/RELEASE-v3.1.1.md
