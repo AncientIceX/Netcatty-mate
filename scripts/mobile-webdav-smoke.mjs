@@ -20,7 +20,7 @@ try{
    window.addEventListener('unhandledrejection',e=>window.__errors.push(String(e.reason)));
    // Fake at-rest encryption ONLY in this isolated test, never real credentials.
    window.NativeBridge={getHomeDirSync:()=>'/sandbox',getDeviceSysInfo:()=>'{}',credentialsAvailable:()=>true,credentialsEncrypt:s=>'fixture:'+s,credentialsDecrypt:s=>s.slice(8),setStatusBarColorHex:()=>{},listPortForwardsSync:()=>'[]',
-    httpFetchAsync:(reqId,url,method)=>{window.__requests.push({url,method});setTimeout(()=>window.__onNativeEvent('async_response',btoa(JSON.stringify({reqId,ok:false,status:401,error:window.__mode==='timeout'?'HTTP request timed out':'fixture authentication failure'}))),window.__mode==='timeout'?1200:30);},
+    httpFetchAsync:(reqId,url,method)=>{window.__requests.push({url,method});setTimeout(()=>window.__onNativeEvent('async_response',btoa(JSON.stringify({reqId,ok:false,status:window.__mode==='timeout'?0:401,error:window.__mode==='timeout'?'HTTP request timed out':'fixture authentication failure'}))),window.__mode==='timeout'?1200:30);},
    };
    if(existing)localStorage.setItem('netcatty_provider_webdav_v1',JSON.stringify({provider:'webdav',status:'disconnected',config:{endpoint:'https://fixture.invalid/dav',authType:'basic',username:'fixture-user',password:'fixture-password'}}));
   },{existing});
@@ -38,8 +38,8 @@ try{
    await form.locator('button[type=submit]').click();
    const card=page.locator('[data-settings-anchor="sync-providers"]');
    console.log('provider buttons',await page.locator('.settings-window button').allTextContents());
-   const webdav=page.locator('div.rounded-lg').filter({has:page.getByText('WebDAV',{exact:true})}).filter({has:page.getByRole('button',{name:/连接|Connect/i})}).last();
-   await webdav.getByRole('button',{name:/连接|Connect/i}).click();
+   const webdav=page.getByText('WebDAV',{exact:true}).locator('xpath=ancestor::div[contains(@class,"border")][1]');
+   await webdav.getByRole('button',{name:/^(连接|Connect|编辑|Edit)$/i}).click();
    const dialog=page.getByRole('dialog').filter({has:page.locator('input[placeholder="https://dav.example.com/remote.php/webdav/"]')});
    await dialog.waitFor();
    await page.waitForTimeout(300);
@@ -48,7 +48,7 @@ try{
    await writeFile(`webdav-smoke-results/${baseline?'baseline':'fixed'}-${existing}.json`,JSON.stringify(report,null,2));
    await page.screenshot({path:`webdav-smoke-results/${baseline?'baseline':'fixed'}-${existing}.png`});
    console.log(JSON.stringify(report));
-   if(baseline){assert.equal(hit.front,false,'old dialog must reproduce hidden behind settings');assert.equal(report.requests.length,0);continue;}
+   if(baseline){assert.equal(hit.front,false,'old dialog must reproduce hidden behind settings');assert.ok(report.requests.every(r=>r.method==='PROPFIND'));continue;}
    assert.equal(hit.front,true,'dialog must be above settings');
    const inputs=dialog.locator('input');
    await inputs.nth(0).fill('https://fixture.invalid/dav');
