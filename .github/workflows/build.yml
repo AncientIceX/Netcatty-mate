@@ -61,6 +61,10 @@ jobs:
           npm run build
           node scripts/mobile-startup-test.mjs
           node scripts/mobile-boot-smoke.mjs
+          git show v3.1.3:infrastructure/mobile/androidBridgePolyfill.ts > infrastructure/mobile/androidBridgePolyfill.ts
+          npm run build
+          node scripts/mobile-ai-smoke.mjs --baseline
+          cp "$RUNNER_TEMP/fixed-bridge.ts" infrastructure/mobile/androidBridgePolyfill.ts
           cp application/app/AppView.tsx "$RUNNER_TEMP/fixed-app-view.tsx"
           cp components/ui/dialog.tsx "$RUNNER_TEMP/fixed-dialog.tsx"
           git show v3.1.2:application/app/AppView.tsx > application/app/AppView.tsx
@@ -71,6 +75,7 @@ jobs:
           cp "$RUNNER_TEMP/fixed-dialog.tsx" components/ui/dialog.tsx
           npm run build
           node scripts/mobile-webdav-smoke.mjs
+          node scripts/mobile-ai-smoke.mjs
           npx tsc --noEmit -p tsconfig.json > mobile-typecheck.log 2>&1 || true
           if grep -E '^(infrastructure/mobile/|components/cloud-sync/CloudSyncControls|components/CloudSyncSettings|components/sftp/SftpFileRow|components/sftp/SftpPaneTreeNode|infrastructure/persistence/localStorageAdapter|infrastructure/config/i18n|application/state/useAutoSync|infrastructure/services/adapters/)' mobile-typecheck.log; then
             cat mobile-typecheck.log
@@ -94,6 +99,7 @@ jobs:
             boot-smoke-results/
             baseline-startup.log
             webdav-smoke-results/
+            ai-smoke-results/
 
       - name: Download JSch 0.2.21 & BouncyCastle 1.79 Libraries
         run: |

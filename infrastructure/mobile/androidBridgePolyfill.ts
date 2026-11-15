@@ -2788,8 +2788,8 @@ export function installAndroidBridgePolyfill(): void {
       cachedAiProviders = decrypted;
       return { ok: true };
     },
-    aiSyncWebSearch: unsupportedMobile,
-    aiAllowlistAddHost: unsupportedMobile,
+    // Desktop-only credential/host publishers are optional. Android aiFetch uses
+    // its native HTTP transport; never advertise rejecting optional publishers.
     aiFetch: async (url, method, headers, body, providerId, _skipHostCheck, _followRedirects, skipTLSVerify) => {
       const native = getNative();
       if (!native) return { ok: false, status: 0, data: '', error: 'NativeBridge unavailable' };
@@ -3021,12 +3021,12 @@ export function installAndroidBridgePolyfill(): void {
 
   // ── Complete IPC Parity Stubs & Mobile Safe Implementations (Zero-Gap Coverage) ──
   const extraBridgeMethods = {
-    externalMcpGetStatus: unsupportedMobile,
+    externalMcpGetStatus: async () => ({ ok: false, enabled: false, state: 'unavailable', error: 'External CLI MCP daemon is desktop-only' }),
     externalMcpSetEnabled: async () => ({ ok: false, error: 'External CLI MCP daemon is desktop-only' } as any),
-    externalMcpSetConfig: unsupportedMobile,
-    externalMcpCodexGetStatus: unsupportedMobile,
-    externalMcpClaudeGetStatus: unsupportedMobile,
-    externalMcpGrokGetStatus: unsupportedMobile,
+    externalMcpSetConfig: async () => ({ ok: false, error: 'MCP configuration and AI privacy enforcement unavailable on Android' }),
+    externalMcpCodexGetStatus: async () => ({ ok: false, state: 'error', error: 'Codex MCP integration unavailable on Android' }),
+    externalMcpClaudeGetStatus: async () => ({ ok: false, state: 'error', error: 'Claude MCP integration unavailable on Android' }),
+    externalMcpGrokGetStatus: async () => ({ ok: false, state: 'error', error: 'Grok MCP integration unavailable on Android' }),
     externalMcpCodexAdd: async () => ({ ok: false, error: 'Unsupported on Android' } as any),
     externalMcpClaudeAdd: async () => ({ ok: false, error: 'Unsupported on Android' } as any),
     externalMcpGrokAdd: async () => ({ ok: false, error: 'Unsupported on Android' } as any),
@@ -3135,22 +3135,23 @@ export function installAndroidBridgePolyfill(): void {
     getWindowsPtyInfo: () => null,
 
     // AI CLI / Codex / SDK / Privacy / Backup Stubs
-    aiResolveCli: async () => ({ ok: false, found: false } as any),
-    aiPrewarmShellEnv: unsupportedMobile,
-    aiCodexGetIntegration: unsupportedMobile,
-    aiCodexGetLoginSession: async () => null as any,
+    aiResolveCli: async () => ({ path: null, binPath: null, version: null, available: false, installed: false, authenticated: false, authSource: null, sdkInstalled: false, cliLoginOk: false, apiKeyOk: false }),
+    // SettingsAITab presence-checks this optional idle prewarm. Android has no
+    // desktop login shell to prewarm: omit it instead of rejecting fire-and-forget.
+    aiCodexGetIntegration: async () => ({ state: 'unknown', isConnected: false, rawOutput: 'Codex CLI unavailable on Android', exitCode: null, customConfig: null }),
+    aiCodexGetLoginSession: async () => ({ ok: false, error: 'Codex CLI unavailable on Android' }),
     aiCodexStartLogin: async () => ({ ok: false, error: 'Codex CLI unavailable on Android' } as any),
-    aiCodexCancelLogin: unsupportedMobile,
-    aiCodexLogout: unsupportedMobile,
-    codexAppServerGetStatus: unsupportedMobile,
-    aiUserSkillsOpenFolder: unsupportedMobile,
+    aiCodexCancelLogin: async () => ({ ok: false, error: 'Codex CLI unavailable on Android' }),
+    aiCodexLogout: async () => ({ ok: false, error: 'Codex CLI unavailable on Android' }),
+    codexAppServerGetStatus: async () => ({ ok: false, available: false, error: 'Codex app-server unavailable on Android' }),
+    aiUserSkillsOpenFolder: async () => ({ ok: false, error: 'Desktop user skills folder unavailable on Android' }),
     aiUserSkillsBuildContext: unsupportedMobile,
     aiSessionsBackupExport: async () => ({ ok: false, canceled: true } as any),
     aiSessionsBackupImport: async () => ({ ok: false, canceled: true } as any),
     aiSessionsBackupReadLatest: async () => ({ ok: false } as any),
     aiSdkAgentCancel: unsupportedMobile,
     aiSdkAgentCleanup: unsupportedMobile,
-    aiSdkAgentListModels: unsupportedMobile,
+    aiSdkAgentListModels: async () => ({ ok: false, models: [], error: 'Desktop agent SDK unavailable on Android' }),
     aiSdkAgentElicitationResponse: unsupportedMobile,
     aiPrivacyStatus: async () => ({ ok: true, enabled: false }),
     aiPrivacyTransform: unsupportedMobile,
