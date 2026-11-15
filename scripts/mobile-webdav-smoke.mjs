@@ -61,11 +61,18 @@ try{
     await save.waitFor({state:'visible'});
     await page.waitForFunction(()=>[...document.querySelectorAll('[role=dialog] button')].some(b=>/^(保存|Save)$/.test(b.textContent)&&!b.disabled));
    }
+   await page.evaluate(()=>window.__netcattyHandleBackPress());
+   await dialog.waitFor({state:'hidden'});
+   await webdav.getByRole('button',{name:/^(连接|Connect|编辑|Edit)$/i}).click();
+   await dialog.waitFor();
    await dialog.getByRole('button',{name:/取消|Cancel/i}).click();
    await dialog.waitFor({state:'hidden'});
-   await page.evaluate(()=>window.netcatty.openSettingsWindow());
+   await page.locator('.settings-window').getByRole('button',{name:/^Close$|^关闭$/i}).click();
+   await page.locator('.settings-window').waitFor({state:'hidden'});
    assert.deepEqual(errors,[]);assert.deepEqual(await page.evaluate(()=>window.__errors),[]);
-   assert.ok((await page.evaluate(()=>window.__requests)).every(r=>r.method==='PROPFIND'));
+   const requests=await page.evaluate(()=>window.__requests);
+   assert.ok(requests.length>=2);assert.ok(requests.every(r=>r.method==='PROPFIND'));
+   await writeFile(`webdav-smoke-results/fixed-${existing}.json`,JSON.stringify({...report,recovery:['authentication failure','timeout'],backClosed:true,cancelClosed:true,settingsClosed:true,requests,errors,unhandled:await page.evaluate(()=>window.__errors)},null,2));
   }catch(e){console.log('UI failure',await page.locator('body').innerText());await page.screenshot({path:`webdav-smoke-results/failure-${existing}.png`});throw e;}finally{await page.close();}
  }
 }finally{await browser.close();await new Promise(r=>server.close(r));}
