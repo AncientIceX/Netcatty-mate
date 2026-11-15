@@ -58,7 +58,7 @@ try{
     await dialog.locator('summary').filter({hasText:/Connection details|连接详情/i}).click();
     await dialog.getByRole('button',{name:/^Refresh$|^刷新$/}).click();
     await page.waitForTimeout(500);
-    assert.match(await dialog.innerText(),/desktop-only|Android/);
+    assert.match(await dialog.innerText(),/Unavailable|不可用/);
     await page.keyboard.press('Escape');
    }else if(name.source.includes('Web Search')){
     await panel.locator('input[type=password]').fill('fixture-search-key');
