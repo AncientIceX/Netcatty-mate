@@ -42,7 +42,8 @@ try{
    await webdav.getByRole('button',{name:/连接|Connect/i}).click();
    const dialog=page.getByRole('dialog').filter({has:page.locator('input[placeholder="https://dav.example.com/remote.php/webdav/"]')});
    await dialog.waitFor();
-   const hit=await dialog.evaluate(el=>{const r=el.getBoundingClientRect();const target=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return {front:el.contains(target),target:target?.outerHTML.slice(0,300),z:getComputedStyle(el).zIndex};});
+   await page.waitForTimeout(300);
+   const hit=await dialog.evaluate(el=>{const settings=document.querySelector('.settings-window').parentElement;const before=settings.style.pointerEvents;settings.style.pointerEvents='auto';const r=el.getBoundingClientRect();const target=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);settings.style.pointerEvents=before;return {front:el.contains(target),target:target?.outerHTML.slice(0,300),z:getComputedStyle(el).zIndex};});
    const report={baseline,existing,hit,errors,unhandled:await page.evaluate(()=>window.__errors),requests:await page.evaluate(()=>window.__requests)};
    await writeFile(`webdav-smoke-results/${baseline?'baseline':'fixed'}-${existing}.json`,JSON.stringify(report,null,2));
    await page.screenshot({path:`webdav-smoke-results/${baseline?'baseline':'fixed'}-${existing}.png`});
