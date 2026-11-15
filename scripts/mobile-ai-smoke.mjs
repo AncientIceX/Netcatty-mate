@@ -45,6 +45,7 @@ try{
    await page.waitForTimeout(2800);
    const panel=page.locator('[role=tabpanel][data-state=active]').last();
    if(name.source.includes('Agents')){
+    await panel.locator('input').first().fill('/fixture/codex');
     const refresh=panel.getByRole('button',{name:/^Check$|^检查$/i}).first();
     await refresh.click();
     await page.waitForTimeout(500);
