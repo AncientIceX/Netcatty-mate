@@ -73,6 +73,7 @@ import {
 } from "./ai/managedAgentState";
 import { splitClaudeEnv, buildClaudeEnv } from "./ai/claudeConfigEnv";
 import { splitCodebuddyEnv } from "./ai/codebuddyConfigEnv";
+import { isAndroidMobileRuntime } from "../../../infrastructure/mobile/androidBridgePolyfill";
 
 type IdleWindow = Window & {
   requestIdleCallback?: (callback: IdleRequestCallback, options?: IdleRequestOptions) => number;
@@ -1025,6 +1026,12 @@ const SettingsAITab: React.FC<SettingsAITabProps> = ({
 
   return (
     <SettingsTabContent value="ai">
+      {isAndroidMobileRuntime() && (
+        <p role="note" className="rounded-md border border-border p-3 text-xs text-muted-foreground">
+          Android: API providers and local settings are supported. Desktop Agent CLIs,
+          SDKs, the external MCP daemon, and AI privacy enforcement are unavailable.
+        </p>
+      )}
       <Tabs value={activeSubTab} onValueChange={(value) => setActiveSubTab(value as AISettingsSubTab)} className="space-y-5">
         <TabsList className="h-auto flex-wrap justify-start bg-muted/50">
           <TabsTrigger value="providers">{t('ai.providers')}</TabsTrigger>

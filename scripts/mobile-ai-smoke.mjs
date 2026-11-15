@@ -39,10 +39,31 @@ try{
   await page.waitForTimeout(500);
   assert.ok(await page.evaluate(()=>Object.values(localStorage).some(v=>v.includes('https://fixture.invalid/v1'))));
   steps.push('OpenAI compatible provider saved locally');
-  for(const name of [/^Agent$/i,/工具接入|Tool Access|Tool Integration/i,/网络搜索|Web Search/i,/^安全$|^Safety$/i]){
+  for(const name of [/^Agents?$|^Agent$/i,/工具接入|Tool Access|Tool Integration/i,/网络搜索|Web Search/i,/^安全$|^Safety$/i]){
    console.log('tabs',await page.getByRole('tab').allTextContents());
    await page.getByRole('tab',{name}).click();
    await page.waitForTimeout(2800);
+   const panel=page.locator('[role=tabpanel][data-state=active]').last();
+   if(name.source.includes('Agents')){
+    const refresh=panel.getByRole('button',{name:/Refresh|Recheck|重新检测|刷新/i}).first();
+    if(await refresh.count())await refresh.click();
+    await page.waitForTimeout(500);
+    assert.ok((await panel.innerText()).includes('Android'));
+   }else if(name.source.includes('Tool Access')){
+    await panel.getByRole('button',{name:/^Refresh$|^刷新$/}).click();
+    await page.waitForTimeout(500);
+    assert.match(await panel.innerText(),/desktop-only|Android/);
+   }else if(name.source.includes('Web Search')){
+    await panel.locator('input[type=password]').fill('fixture-search-key');
+    await panel.locator('input[type=number]').fill('7');
+    await page.waitForTimeout(300);
+    assert.ok(await page.evaluate(()=>Object.values(localStorage).some(v=>v.includes('maxResults')&&v.includes('7'))));
+   }else{
+    const timeout=panel.locator('[data-settings-anchor="ai-safety-response-idle-timeout"] input');
+    await timeout.fill('123');
+    await page.waitForTimeout(300);
+    assert.equal(await timeout.inputValue(),'123');
+   }
    steps.push(String(name));
    await page.screenshot({path:`ai-smoke-results/tab-${steps.length}.png`});
   }
