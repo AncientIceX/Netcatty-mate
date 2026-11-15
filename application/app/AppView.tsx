@@ -18,6 +18,7 @@ import { UnsavedChangesProvider, promptUnsavedChanges } from '../../components/e
 import { SnippetExecutionProvider } from '../../components/SnippetExecutionProvider';
 import { Button } from '../../components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../../components/ui/dialog';
+import { PortalContainerProvider } from '../../components/ui/portal-container';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { LazyLoadBoundary } from '../../components/ui/lazy-load-boundary';
@@ -338,6 +339,7 @@ function AppViewInner({ domains }: AppViewProps) {
   }, []);
 
   const [mobileSettingsOpen, setMobileSettingsOpen] = useState(false);
+  const [mobileSettingsContainer, setMobileSettingsContainer] = useState<HTMLDivElement | null>(null);
   useEffect(() => {
     const openHandler = () => setMobileSettingsOpen(true);
     const closeHandler = () => setMobileSettingsOpen(false);
@@ -1151,13 +1153,17 @@ function AppViewInner({ domains }: AppViewProps) {
 
       {/* Mobile in-app full-screen Settings overlay */}
       {mobileSettingsOpen && getAppSettingsRuntime() && getAppAppLockRuntime() && (
-        <div className="fixed inset-0 z-[120] bg-background flex flex-col">
+        <div ref={setMobileSettingsContainer} className="fixed inset-0 z-[120] bg-background flex flex-col">
+          {/* Keep modal portals inside this stacking context. Body portals at
+              z-50/70 are hidden by settings while Radix disables its input. */}
+          <PortalContainerProvider container={mobileSettingsContainer}>
           <Suspense fallback={<div className="flex-1 bg-background" />}>
             <LazyMobileSettingsPage
               settings={getAppSettingsRuntime()!}
               appLock={getAppAppLockRuntime()!}
             />
           </Suspense>
+          </PortalContainerProvider>
         </div>
       )}
     </div>

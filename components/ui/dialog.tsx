@@ -4,6 +4,7 @@ import * as React from "react"
 
 import { useI18n } from "../../application/i18n/I18nProvider"
 import { cn } from "../../lib/utils"
+import { usePortalContainer } from "./portal-container"
 
 const Dialog = DialogPrimitive.Root
 
@@ -33,9 +34,10 @@ const DialogContent = React.forwardRef<
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & { hideCloseButton?: boolean; overlayClassName?: string }
 >(({ className, children, hideCloseButton, overlayClassName, ...props }, ref) => {
   const { t } = useI18n()
+  const portalContainer = usePortalContainer()
 
   return (
-    <DialogPortal>
+    <DialogPortal container={portalContainer ?? undefined}>
       <DialogOverlay className={overlayClassName} />
       <DialogPrimitive.Content
         ref={ref}
