@@ -53,7 +53,7 @@ try{
     assert.match(await panel.innerText(),/Not found|未找到/);
     assert.match(await page.getByRole('note').innerText(),/Android/);
    }else if(name.source.includes('Tool Access')){
-    await panel.locator('details').filter({has:panel.getByRole('button',{name:/^Refresh$|^刷新$/,includeHidden:true})}).locator('summary').click();
+    await panel.locator('summary').filter({hasText:/Connection details|连接详情/i}).click();
     await panel.getByRole('button',{name:/^Refresh$|^刷新$/}).click();
     await page.waitForTimeout(500);
     assert.match(await panel.innerText(),/desktop-only|Android/);
