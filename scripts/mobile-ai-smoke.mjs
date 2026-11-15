@@ -41,9 +41,10 @@ try{
   steps.push('OpenAI compatible provider saved locally');
   for(const name of [/^Agents?$|^Agent$/i,/工具接入|Tool Access|Tool Integration/i,/网络搜索|Web Search/i,/^安全$|^Safety$/i]){
    console.log('tabs',await page.getByRole('tab').allTextContents());
-   await page.getByRole('tab',{name}).click();
+   const tab=page.getByRole('tab',{name});
+   await tab.click();
    await page.waitForTimeout(2800);
-   const panel=page.locator('[role=tabpanel][data-state=active]').last();
+   const panel=page.locator(`[id="${await tab.getAttribute('aria-controls')}"]`);
    if(name.source.includes('Agents')){
     await panel.locator('input').first().fill('/fixture/codex');
     const refresh=panel.getByRole('button',{name:/^Check$|^检查$/i}).first();
