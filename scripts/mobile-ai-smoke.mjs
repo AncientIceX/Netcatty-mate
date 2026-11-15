@@ -53,10 +53,13 @@ try{
     assert.match(await panel.innerText(),/Not found|未找到/);
     assert.match(await page.getByRole('note').innerText(),/Android/);
    }else if(name.source.includes('Tool Access')){
-    await panel.locator('summary').filter({hasText:/Connection details|连接详情/i}).click();
-    await panel.getByRole('button',{name:/^Refresh$|^刷新$/}).click();
+    await panel.getByRole('button',{name:/Configure clients|配置客户端/i}).click();
+    const dialog=page.getByRole('dialog');
+    await dialog.locator('summary').filter({hasText:/Connection details|连接详情/i}).click();
+    await dialog.getByRole('button',{name:/^Refresh$|^刷新$/}).click();
     await page.waitForTimeout(500);
-    assert.match(await panel.innerText(),/desktop-only|Android/);
+    assert.match(await dialog.innerText(),/desktop-only|Android/);
+    await page.keyboard.press('Escape');
    }else if(name.source.includes('Web Search')){
     await panel.locator('input[type=password]').fill('fixture-search-key');
     await panel.locator('input[type=number]').fill('7');
