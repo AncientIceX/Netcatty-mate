@@ -2863,7 +2863,8 @@ export function installAndroidBridgePolyfill(): void {
     aiSetChatSessionCancelled: unsupportedMobile,
     aiDiscoverAgents: async () => [],
     aiUserSkillsGetStatus: async () => ({
-      ok: true,
+      ok: false,
+      error: 'Desktop user skills directory unavailable on Android',
       directoryPath: '',
       skills: [],
       warnings: [],

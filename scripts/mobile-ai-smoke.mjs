@@ -45,10 +45,11 @@ try{
    await page.waitForTimeout(2800);
    const panel=page.locator('[role=tabpanel][data-state=active]').last();
    if(name.source.includes('Agents')){
-    const refresh=panel.getByRole('button',{name:/Refresh|Recheck|重新检测|刷新/i}).first();
-    if(await refresh.count())await refresh.click();
+    const refresh=panel.getByRole('button',{name:/^Check$|^检查$/i}).first();
+    await refresh.click();
     await page.waitForTimeout(500);
-    assert.ok((await panel.innerText()).includes('Android'));
+    assert.match(await panel.innerText(),/Not found|未找到/);
+    assert.match(await page.getByRole('note').innerText(),/Android/);
    }else if(name.source.includes('Tool Access')){
     await panel.getByRole('button',{name:/^Refresh$|^刷新$/}).click();
     await page.waitForTimeout(500);
