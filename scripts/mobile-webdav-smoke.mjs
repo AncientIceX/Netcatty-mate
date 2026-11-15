@@ -30,7 +30,7 @@ try{
    await page.evaluate(()=>window.netcatty.openSettingsWindow());
    await page.locator('.settings-window').waitFor();
    console.log('settings tabs',await page.getByRole('tab').allTextContents());
-   await page.getByRole('tab',{name:/云同步|Cloud Sync/i}).click();
+   await page.getByRole('tab',{name:/云同步|Cloud Sync|Sync & Cloud/i}).click();
    const form=page.locator('.settings-window form');
    await form.locator('input[type=password]').nth(0).fill('Fixture-only-123!');
    await form.locator('input[type=password]').nth(1).fill('Fixture-only-123!');
