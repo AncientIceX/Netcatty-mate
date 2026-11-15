@@ -3139,7 +3139,7 @@ export function installAndroidBridgePolyfill(): void {
     aiResolveCli: async () => ({ path: null, binPath: null, version: null, available: false, installed: false, authenticated: false, authSource: null, sdkInstalled: false, cliLoginOk: false, apiKeyOk: false }),
     // SettingsAITab presence-checks this optional idle prewarm. Android has no
     // desktop login shell to prewarm: omit it instead of rejecting fire-and-forget.
-    aiCodexGetIntegration: async () => ({ state: 'unknown', isConnected: false, rawOutput: 'Codex CLI unavailable on Android', exitCode: null, customConfig: null }),
+    aiCodexGetIntegration: async () => ({ state: 'unknown' as const, isConnected: false, rawOutput: 'Codex CLI unavailable on Android', exitCode: null, customConfig: null }),
     aiCodexGetLoginSession: async () => ({ ok: false, error: 'Codex CLI unavailable on Android' }),
     aiCodexStartLogin: async () => ({ ok: false, error: 'Codex CLI unavailable on Android' } as any),
     aiCodexCancelLogin: async () => ({ ok: false, error: 'Codex CLI unavailable on Android' }),
