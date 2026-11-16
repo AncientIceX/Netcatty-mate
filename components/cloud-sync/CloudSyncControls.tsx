@@ -396,7 +396,7 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
                             ) : (
                                 <RefreshCw size={14} />
                             )}
-                            {t('cloudSync.provider.sync')}
+                            {window.__netcattyMobileMode ? (/^zh/i.test(navigator.language) ? '拉取恢复' : 'Pull / Restore') : t('cloudSync.provider.sync')}
                         </Button>
                         {extraActions}
                         {onEdit && (

@@ -23,6 +23,7 @@ const native = new Proxy({
  cancelSftpTransfer: id => calls.push(['cancel', id]),
 }, { get(target, key) { if (key in target) return target[key]; if (/^sftp(WriteFile|Mkdir|Delete|Rename|Chmod)$/.test(key)) return (id, ...args) => { calls.push([key, ...args]); response(id); }; return () => {}; } });
 win.NativeBridge = native;
+native.cloudReadFetchAsync = (...args) => native.httpFetchAsync(...args);
 let now = 59000;
 class Clock extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } }
 const context = vm.createContext({ window: win, navigator: { userAgent: 'Android' }, document: { documentElement: { setAttribute() {} }, querySelector() { return null; } }, localStorage: { getItem: k => storage.get(k), setItem: (k, v) => storage.set(k, v) }, crypto: webcrypto, TextEncoder, TextDecoder, Uint8Array, ArrayBuffer, URL, URLSearchParams, Date: Clock, atob, btoa, console, queueMicrotask });

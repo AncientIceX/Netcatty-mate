@@ -78,6 +78,15 @@ test('mobile sync-all applies each provider independently, never fan-out uploads
   assert.ok([...results.values()].every(r => r.mergedPayloadApplied));
 });
 
+test('empty remote is not a successful restore and never creates a backup', async () => {
+  const m = manager();
+  m.downloadFromProvider = async () => { m.calls.push('download'); return null as any; };
+  const result = await syncToProviderImpl.call(m, 'webdav', {}, { conflictActionOverride: 'upload-local' });
+  assert.equal(result.success, false);
+  assert.match(result.error, /No restorable cloud backup/);
+  assert.deepEqual(m.calls, ['download']);
+});
+
 test('failed apply does not acknowledge remote', async () => {
   const m = manager();
   const result = await syncToProviderImpl.call(m, 'github', {}, {

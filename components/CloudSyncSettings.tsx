@@ -733,11 +733,11 @@ const SyncDashboard: React.FC<SyncDashboardProps> = ({
             }
 
             if (result.success) {
-                toast.success(t('cloudSync.sync.success', { provider }));
+                toast.success(window.__netcattyMobileMode ? (/^zh/i.test(navigator.language) ? '云端备份已拉取恢复' : 'Cloud backup pulled and restored') : t('cloudSync.sync.success', { provider }));
             } else if (result.conflictDetected) {
                 // Conflict modal will show automatically
             } else {
-                toast.error(result.error || t('cloudSync.sync.failed'), t('cloudSync.sync.failedTitle'));
+                toast.error(result.error || t('cloudSync.sync.failed'), window.__netcattyMobileMode ? (/^zh/i.test(navigator.language) ? '拉取恢复失败' : 'Pull / restore failed') : t('cloudSync.sync.failedTitle'));
             }
         } catch (error) {
             toast.error(error instanceof Error ? error.message : t('common.unknownError'), t('cloudSync.sync.errorTitle'));
@@ -888,6 +888,9 @@ const SyncDashboard: React.FC<SyncDashboardProps> = ({
     return (
         <div className="space-y-6">
             {/* Header with status */}
+            {window.__netcattyMobileMode && <p data-testid="cloud-pull-only" className="text-sm text-muted-foreground">
+                {/^zh/i.test(navigator.language) ? '云端仅拉取恢复：不上传、不合并回写、不创建目录、不删除远端备份。SFTP 仍可正常双向操作。' : 'Cloud is pull / restore only: no uploads, merge writes, directory creation or remote backup deletion. SFTP remains bidirectional.'}
+            </p>}
             <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                     <div className="w-10 h-10 rounded-full bg-green-500/10 flex items-center justify-center">

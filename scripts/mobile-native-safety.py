@@ -29,6 +29,15 @@ def method(name):
 
 
 class SecuritySourceChecks(unittest.TestCase):
+    def test_cloud_native_allowlist_precedes_transport(self):
+        text = method('cloudReadFetchAsync')
+        for name in ['GET', 'HEAD', 'PROPFIND']:
+            self.assertIn('"' + name + '".equals(method)', text)
+        self.assertIn('!bodyStr.isEmpty()', text)
+        self.assertLess(text.index('return;'), text.index('httpFetchAsync('))
+        for name in ['PUT', 'POST', 'MKCOL', 'DELETE', 'MOVE', 'COPY', 'PATCH']:
+            self.assertNotIn('"' + name + '".equals(method)', text)
+
     def test_all_java_parse(self):
         for path in ROOT.glob('*.java'):
             javalang.parse.parse(path.read_text())

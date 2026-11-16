@@ -393,14 +393,7 @@ export async function syncToProviderImpl(this: any,
         const remote = await this.downloadFromProvider(provider);
         assertSyncSecurityGeneration(this, syncSecurityGeneration);
         if (!remote) {
-          this.updateProviderStatus(provider, 'connected');
-          this.state.syncState = 'IDLE';
-          this.notifyStateChange();
-          return {
-            success: true,
-            provider,
-            action: 'none',
-          };
+          throw new Error('No restorable cloud backup found / 云端没有可恢复备份；不会自动创建目录或上传数据');
         }
         let committed = false;
         if (opts.applyConvergentPayload) {

@@ -20,9 +20,10 @@ try{
    window.addEventListener('unhandledrejection',e=>window.__errors.push(String(e.reason)));
    // Fake at-rest encryption ONLY in this isolated test, never real credentials.
    window.NativeBridge={getHomeDirSync:()=>'/sandbox',getDeviceSysInfo:()=>'{}',credentialsAvailable:()=>true,credentialsEncrypt:s=>'fixture:'+s,credentialsDecrypt:s=>s.slice(8),setStatusBarColorHex:()=>{},listPortForwardsSync:()=>'[]',
-    httpFetchAsync:(reqId,url,method)=>{window.__requests.push({url,method});setTimeout(()=>window.__onNativeEvent('async_response',btoa(JSON.stringify({reqId,ok:false,status:window.__mode==='timeout'?0:401,error:window.__mode==='timeout'?'HTTP request timed out':'fixture authentication failure'}))),window.__mode==='timeout'?1200:30);},
+    httpFetchAsync:(reqId,url,method)=>{window.__requests.push({url,method});setTimeout(()=>window.__onNativeEvent('async_response',btoa(JSON.stringify({reqId,ok:window.__mode==='ok',status:window.__mode==='ok'?207:window.__mode==='timeout'?0:401,data:'',error:window.__mode==='timeout'?'HTTP request timed out':'fixture authentication failure'}))),window.__mode==='timeout'?1200:30);},
    };
    if(existing)localStorage.setItem('netcatty_provider_webdav_v1',JSON.stringify({provider:'webdav',status:'disconnected',config:{endpoint:'https://fixture.invalid/dav',authType:'basic',username:'fixture-user',password:'fixture-password'}}));
+   window.NativeBridge.cloudReadFetchAsync = (...args) => window.NativeBridge.httpFetchAsync(...args);
   },{existing});
   try{
    await page.goto(`http://127.0.0.1:${server.address().port}`,{waitUntil:'networkidle'});
@@ -49,6 +50,7 @@ try{
    await page.screenshot({path:`webdav-smoke-results/${baseline?'baseline':'fixed'}-${existing}.png`});
    console.log(JSON.stringify(report));
    if(baseline){assert.equal(hit.front,false,'old dialog must reproduce hidden behind settings');assert.ok(report.requests.every(r=>r.method==='PROPFIND'));continue;}
+   await page.getByTestId('cloud-pull-only').waitFor();
    assert.equal(hit.front,true,'dialog must be above settings');
    const inputs=dialog.locator('input');
    await inputs.nth(0).fill('https://fixture.invalid/dav');
@@ -60,6 +62,7 @@ try{
     await page.evaluate(()=>new Promise(r=>setTimeout(r,50)));
     await save.waitFor({state:'visible'});
     await page.waitForFunction(()=>[...document.querySelectorAll('[role=dialog] button')].some(b=>/^(保存|Save)$/.test(b.textContent)&&!b.disabled));
+    if(mode==='fail')assert.match(await dialog.innerText(),/401/);
    }
    await page.evaluate(()=>window.__netcattyHandleBackPress());
    await dialog.waitFor({state:'hidden'});
@@ -67,6 +70,20 @@ try{
    await dialog.waitFor();
    await dialog.getByRole('button',{name:/取消|Cancel/i}).click();
    await dialog.waitFor({state:'hidden'});
+   await webdav.getByRole('button',{name:/^(连接|Connect|编辑|Edit)$/i}).click();
+   await dialog.waitFor();
+   await dialog.locator('input').nth(0).fill('https://fixture.invalid/dav');
+   await dialog.locator('input[autocomplete=username]').fill('fixture-user');
+   await dialog.locator('input[autocomplete=current-password]').fill('fixture-password');
+   await page.evaluate(()=>{window.__mode='ok';});
+   await dialog.getByRole('button',{name:/^保存$|^Save$/i}).click();
+   await dialog.waitFor({state:'hidden'});
+   await page.evaluate(()=>{window.__mode='fail';});
+   const pull=webdav.getByRole('button',{name:/拉取恢复|Pull \/ Restore/});
+   await pull.click();
+   await page.waitForTimeout(400);
+   assert.match(await page.locator('body').innerText(),/401/);
+   await page.waitForFunction(()=>[...document.querySelectorAll('button')].some(b=>/拉取恢复|Pull \/ Restore/.test(b.textContent)&&!b.disabled));
    await page.locator('.settings-window').getByRole('button',{name:/^Close$|^关闭$/i}).click();
    await page.locator('.settings-window').waitFor({state:'hidden'});
    assert.deepEqual(errors,[]);assert.deepEqual(await page.evaluate(()=>window.__errors),[]);

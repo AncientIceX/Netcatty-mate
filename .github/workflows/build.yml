@@ -76,6 +76,11 @@ jobs:
           npm run build
           node scripts/mobile-webdav-smoke.mjs
           node scripts/mobile-ai-smoke.mjs
+          node scripts/mobile-cloud-read-test.mjs
+          git show v3.1.4:infrastructure/mobile/androidBridgePolyfill.ts > "$RUNNER_TEMP/v314-cloud-bridge.ts"
+          if BRIDGE_SOURCE="$RUNNER_TEMP/v314-cloud-bridge.ts" node scripts/mobile-cloud-read-test.mjs > cloud-read-results/baseline.log 2>&1; then
+            echo 'Cloud regression did not detect v3.1.4'; exit 1
+          fi
           npx tsc --noEmit -p tsconfig.json > mobile-typecheck.log 2>&1 || true
           if grep -E '^(infrastructure/mobile/|components/cloud-sync/CloudSyncControls|components/CloudSyncSettings|components/sftp/SftpFileRow|components/sftp/SftpPaneTreeNode|infrastructure/persistence/localStorageAdapter|infrastructure/config/i18n|application/state/useAutoSync|infrastructure/services/adapters/)' mobile-typecheck.log; then
             cat mobile-typecheck.log
@@ -100,6 +105,7 @@ jobs:
             baseline-startup.log
             webdav-smoke-results/
             ai-smoke-results/
+            cloud-read-results/
 
       - name: Download JSch 0.2.21 & BouncyCastle 1.79 Libraries
         run: |
@@ -169,27 +175,27 @@ jobs:
             --ks-key-alias netcattykey \
             --ks-pass env:ANDROID_SIGNING_PASSWORD \
             --key-pass env:ANDROID_SIGNING_PASSWORD \
-            --out dist_apk/Netcatty-Mate-v3.1.4-Android.apk \
+            --out dist_apk/Netcatty-Mate-v3.1.5-Android.apk \
             build_apk/aligned.apk
 
-          ls -lh dist_apk/Netcatty-Mate-v3.1.4-Android.apk
+          ls -lh dist_apk/Netcatty-Mate-v3.1.5-Android.apk
 
       - name: Verify APK signature and publish build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: netcatty-mate-android-v3.1.4
+          name: netcatty-mate-android-v3.1.5
           path: dist_apk/*.apk
 
       - name: Verify signed APK
         run: |
           BUILD_TOOLS=$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)
-          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" verify --verbose dist_apk/Netcatty-Mate-v3.1.4-Android.apk
+          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" verify --verbose --print-certs dist_apk/Netcatty-Mate-v3.1.5-Android.apk
 
-      - name: Publish GitHub Release v3.1.4
+      - name: Publish GitHub Release v3.1.5
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist_apk/Netcatty-Mate-v3.1.4-Android.apk \
+          gh release create "$GITHUB_REF_NAME" dist_apk/Netcatty-Mate-v3.1.5-Android.apk \
             -R AncientIceX/Netcatty-mate --draft=false --prerelease=false \
-            --verify-tag --title "Netcatty Mate v3.1.4" --notes-file android/RELEASE-v3.1.4.md
+            --verify-tag --title "Netcatty Mate v3.1.5" --notes-file android/RELEASE-v3.1.5.md

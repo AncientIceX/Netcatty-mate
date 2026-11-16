@@ -3254,6 +3254,21 @@ public class MainActivity extends Activity {
         // 9. Strictly Pull-Only Cloud Sync HTTP Bridge & AI Stream Bridge
         // =====================================================================
         @JavascriptInterface
+        public void cloudReadFetchAsync(final String reqId, final String urlStr, final String method, final String headersJson, final String bodyStr, final boolean skipTlsVerify) {
+            if (!("GET".equals(method) || "HEAD".equals(method) || "PROPFIND".equals(method))
+                    || (bodyStr != null && !bodyStr.isEmpty())) {
+                try {
+                    JSONObject out = new JSONObject();
+                    out.put("reqId", reqId); out.put("ok", false); out.put("status", 0);
+                    out.put("error", "Mobile cloud sync is download-only");
+                    emitToJs("async_response", out);
+                } catch (Exception ignored) {}
+                return;
+            }
+            httpFetchAsync(reqId, urlStr, method, headersJson, bodyStr, skipTlsVerify);
+        }
+
+        @JavascriptInterface
         public void httpFetchAsync(final String reqId, final String urlStr, final String method, final String headersJson, final String bodyStr, final boolean skipTlsVerify) {
             ioPool.execute(new Runnable() {
                 @Override

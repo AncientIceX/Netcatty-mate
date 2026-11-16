@@ -95,6 +95,10 @@ interface AndroidNativeBridge {
   mkdirLocal(dirPath: string): boolean;
 
   // HTTP & AI Stream
+  cloudReadFetchAsync(
+    reqId: string, urlStr: string, method: string, headersJson: string,
+    bodyStr: string, skipTlsVerify: boolean,
+  ): void;
   httpFetchAsync(
     reqId: string,
     urlStr: string,
@@ -132,6 +136,28 @@ function shellQuote(value: string): string {
 }
 
 async function unsupportedMobile(): Promise<never> { throw new Error('Unsupported on Android'); }
+
+function assertWebdavReadStatus(res: any): void {
+  const chinese = /^zh/i.test(navigator.language || '');
+  if (res?.status === 401) throw new Error(chinese
+    ? 'WebDAV 认证失败（HTTP 401）：请核对地址、用户名及密码/应用专用密码；这不是上传失败，未写入云端。'
+    : 'WebDAV authentication failed (HTTP 401): check endpoint, username and password/app password. No cloud data was written.');
+  if (res?.status === 403) throw new Error(chinese
+    ? 'WebDAV 拒绝读取（HTTP 403）：请检查读取权限；未写入云端。'
+    : 'WebDAV read forbidden (HTTP 403): check read permissions. No cloud data was written.');
+}
+
+function cloudReadNative(): AndroidNativeBridge {
+  const native = getNative();
+  if (!native) throw new Error('NativeBridge unavailable');
+  // Dedicated native allowlist, separate from AI HTTP and bidirectional SFTP.
+  return { httpFetchAsync: (id: string, url: string, method: string, headers: string, body: string, insecure: boolean) => {
+    if (!['GET', 'HEAD', 'PROPFIND'].includes(method) || body) {
+      throw new Error('Mobile cloud sync is download-only');
+    }
+    native.cloudReadFetchAsync(id, url, method, headers, body, insecure);
+  } } as AndroidNativeBridge;
+}
 
 function getNative(): AndroidNativeBridge | null {
   return typeof window !== 'undefined' && window.NativeBridge ? window.NativeBridge : null;
@@ -1964,7 +1990,8 @@ export function installAndroidBridgePolyfill(): void {
     },
 
     cloudSyncWebdavInitialize: async (config) => {
-      const native = getNative();
+      if (config.authType === 'digest') throw new Error('Android WebDAV Digest authentication is not supported / 暂不支持 Digest 认证；未发送请求，请使用服务器支持的 Basic 或 Bearer');
+      const native = cloudReadNative();
       if (!native) throw new Error('NativeBridge unavailable');
       const rawEndpoint = String(config.endpoint || '').trim();
       const normalized = /^https?:\/\//i.test(rawEndpoint) ? rawEndpoint : `https://${rawEndpoint}`;
@@ -1989,16 +2016,15 @@ export function installAndroidBridgePolyfill(): void {
           Boolean(config.allowInsecure),
         ),
       );
-      if (res?.status === 401 || res?.status === 403) {
-        throw new Error(`WebDAV authentication failed (HTTP ${res.status})`);
-      }
-      if (!res?.status || (res.status >= 500 && res.status !== 501)) {
+      assertWebdavReadStatus(res);
+      if (!(res?.ok || res?.status === 404)) {
         throw new Error(res?.error || `WebDAV connection failed (HTTP ${res?.status || 0})`);
       }
       return { resourceId: '/netcatty-vault.json' };
     },
     cloudSyncWebdavDownload: async (config) => {
-      const native = getNative();
+      if (config.authType === 'digest') throw new Error('Android WebDAV Digest authentication is not supported / 暂不支持 Digest 认证；未发送请求，请使用服务器支持的 Basic 或 Bearer');
+      const native = cloudReadNative();
       if (!native) throw new Error('NativeBridge unavailable');
       const rawEndpoint = String(config.endpoint || '').trim();
       const normalized = /^https?:\/\//i.test(rawEndpoint) ? rawEndpoint : `https://${rawEndpoint}`;
@@ -2022,6 +2048,7 @@ export function installAndroidBridgePolyfill(): void {
           Boolean(config.allowInsecure),
         ),
       );
+      assertWebdavReadStatus(res);
       if (res?.status === 404) return { syncedFile: null };
       if (!res?.ok) throw new Error(`WebDAV pull failed: HTTP ${res?.status}`);
       const text = String(res.data || '').trim();
@@ -2036,7 +2063,7 @@ export function installAndroidBridgePolyfill(): void {
     },
 
     cloudSyncS3Initialize: async (config) => {
-      const native = getNative();
+      const native = cloudReadNative();
       const prefix = String(config.prefix || '').trim().replace(/^\/+|\/+$/g, '');
       const key = prefix ? `${prefix}/netcatty-vault.json` : 'netcatty-vault.json';
       if (!native) throw new Error('NativeBridge unavailable');
@@ -2060,7 +2087,7 @@ export function installAndroidBridgePolyfill(): void {
       return { resourceId: key };
     },
     cloudSyncS3Download: async (config) => {
-      const native = getNative();
+      const native = cloudReadNative();
       if (!native) throw new Error('NativeBridge unavailable');
       const prefix = String(config.prefix || '').trim().replace(/^\/+|\/+$/g, '');
       const key = prefix ? `${prefix}/netcatty-vault.json` : 'netcatty-vault.json';

@@ -507,7 +507,7 @@ export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
                 </TabsContent>
 
                 <TabsContent value="status" className="space-y-4">
-                    <ConvergentSyncPanel
+                    {!window.__netcattyMobileMode && <ConvergentSyncPanel
                         t={t}
                         resolvedLocale={resolvedLocale}
                         config={convergentConfig}
@@ -520,14 +520,14 @@ export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
                         onCancelMigration={onCancelConvergentMigration}
                         onResolveConflict={onResolveConvergentConflict}
                         onDowngrade={onDowngradeConvergent}
-                    />
+                    />}
 
                     <SettingsAnchor anchorId="sync-auto-sync" className="p-4 rounded-lg border bg-card">
                         <div className="flex items-center justify-between">
                             <div>
-                                <div className="text-sm font-medium">{t('cloudSync.autoSync.title')}</div>
+                                <div className="text-sm font-medium">{window.__netcattyMobileMode ? (/^zh/i.test(navigator.language) ? '定时拉取恢复' : 'Periodic pull / restore') : t('cloudSync.autoSync.title')}</div>
                                 <div className="text-xs text-muted-foreground">
-                                    {t('cloudSync.autoSync.desc')}
+                                    {window.__netcattyMobileMode ? (/^zh/i.test(navigator.language) ? '仅从云端读取备份，不会上传本地修改。' : 'Read cloud backups only; local changes are never uploaded.') : t('cloudSync.autoSync.desc')}
                                 </div>
                             </div>
                             <Toggle
@@ -538,7 +538,7 @@ export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
                         </div>
                     </SettingsAnchor>
 
-                    <SettingsAnchor anchorId="sync-strategy" className="p-4 rounded-lg border bg-card space-y-3">
+                    {!window.__netcattyMobileMode && <SettingsAnchor anchorId="sync-strategy" className="p-4 rounded-lg border bg-card space-y-3">
                         <div>
                             <div className="text-sm font-medium">{t('cloudSync.strategy.title')}</div>
                             <div className="text-xs text-muted-foreground">
@@ -596,7 +596,7 @@ export const CloudSyncDashboardTabs: React.FC<CloudSyncDashboardTabsProps> = ({
                                 </SelectItem>
                             </SelectContent>
                         </Select>
-                    </SettingsAnchor>
+                    </SettingsAnchor>}
 
                     <SettingsAnchor anchorId="sync-ai-sessions" className="p-4 rounded-lg border bg-card">
                         <div className="flex items-start justify-between gap-3">
