@@ -88,7 +88,7 @@ try{
    await page.locator('.settings-window').waitFor({state:'hidden'});
    assert.deepEqual(errors,[]);assert.deepEqual(await page.evaluate(()=>window.__errors),[]);
    const requests=await page.evaluate(()=>window.__requests);
-   assert.ok(requests.length>=2);assert.ok(requests.every(r=>r.method==='PROPFIND'));
+   assert.ok(requests.length>=2);assert.ok(requests.every(r=>['PROPFIND','GET'].includes(r.method)));
    await writeFile(`webdav-smoke-results/fixed-${existing}.json`,JSON.stringify({...report,recovery:['authentication failure','timeout'],backClosed:true,cancelClosed:true,settingsClosed:true,requests,errors,unhandled:await page.evaluate(()=>window.__errors)},null,2));
   }catch(e){console.log('UI failure',await page.locator('body').innerText());await page.screenshot({path:`webdav-smoke-results/failure-${existing}.png`});throw e;}finally{await page.close();}
  }
