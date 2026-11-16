@@ -137,6 +137,25 @@ function shellQuote(value: string): string {
 
 async function unsupportedMobile(): Promise<never> { throw new Error('Unsupported on Android'); }
 
+// Match desktop WebDAV recovery for non-truncating servers (#2223).
+// Parse the complete body first; only recover a complete JSON prefix when
+// the parser identifies trailing non-whitespace, never repair truncated data.
+function parseWebdavSyncedFile(text: string): any {
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const match = /Unexpected non-whitespace character after JSON at position (\d+)/i.exec(message);
+    if (match) {
+      const pos = Number(match[1]);
+      if (Number.isFinite(pos) && pos > 0 && pos <= text.length) {
+        return JSON.parse(text.slice(0, pos));
+      }
+    }
+    throw error;
+  }
+}
+
 function assertWebdavReadStatus(res: any): void {
   const chinese = /^zh/i.test(navigator.language || '');
   if (res?.status === 401) throw new Error(chinese
@@ -2052,7 +2071,7 @@ export function installAndroidBridgePolyfill(): void {
       if (res?.status === 404) return { syncedFile: null };
       if (!res?.ok) throw new Error(`WebDAV pull failed: HTTP ${res?.status}`);
       const text = String(res.data || '').trim();
-      return { syncedFile: text ? JSON.parse(text) : null };
+      return { syncedFile: text ? parseWebdavSyncedFile(text) : null };
     },
     // STRICT PULL-ONLY: WebDAV upload & delete are no-op / blocked on mobile
     cloudSyncWebdavUpload: async () => {

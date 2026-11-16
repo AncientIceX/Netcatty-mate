@@ -77,6 +77,11 @@ jobs:
           node scripts/mobile-webdav-smoke.mjs
           node scripts/mobile-ai-smoke.mjs
           node scripts/mobile-cloud-read-test.mjs
+          node scripts/mobile-vault-key-test.mjs
+          git show v3.1.5:infrastructure/mobile/androidBridgePolyfill.ts > "$RUNNER_TEMP/v315-vault-bridge.ts"
+          if BRIDGE_SOURCE="$RUNNER_TEMP/v315-vault-bridge.ts" node scripts/mobile-vault-key-test.mjs > cloud-read-results/vault-baseline.log 2>&1; then
+            echo 'Vault regression did not detect v3.1.5 trailing-byte incompatibility'; exit 1
+          fi
           git show v3.1.4:infrastructure/mobile/androidBridgePolyfill.ts > "$RUNNER_TEMP/v314-cloud-bridge.ts"
           if BRIDGE_SOURCE="$RUNNER_TEMP/v314-cloud-bridge.ts" node scripts/mobile-cloud-read-test.mjs > cloud-read-results/baseline.log 2>&1; then
             echo 'Cloud regression did not detect v3.1.4'; exit 1
