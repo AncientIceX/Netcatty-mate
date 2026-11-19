@@ -724,8 +724,14 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
         }
       }
     };
+    const onBack = (event: Event) => {
+      event.preventDefault();
+      handleCloseSidePanel();
+    };
+    window.addEventListener('netcatty:mobile:close-tool-drawer', onBack);
     document.addEventListener('keydown', onKey);
     return () => {
+      window.removeEventListener('netcatty:mobile:close-tool-drawer', onBack);
       document.removeEventListener('keydown', onKey);
       siblings.forEach((node, i) => { node.inert = inertValues[i]; });
       if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });

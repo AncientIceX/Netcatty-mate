@@ -572,6 +572,12 @@ export function installAndroidBridgePolyfill(): void {
   (window as any).__netcattyHandleBackPress = (): boolean => {
     try {
       // 1. Close any open Radix Dialog / Popover / ContextMenu / Sheet via Escape key
+      const drawer = document.querySelector('[data-mobile-drawer="true"][data-state="open"]');
+      if (drawer && !document.querySelector('[role="dialog"][data-state="open"]:not([data-mobile-drawer]), [role="menu"][data-state="open"], [role="listbox"]')) {
+        const back = new CustomEvent('netcatty:mobile:close-tool-drawer', { cancelable: true });
+        window.dispatchEvent(back);
+        if (back.defaultPrevented) return true;
+      }
       const openLayer = document.querySelector(
         '[role="dialog"][data-state="open"], [data-radix-popper-content-wrapper], [data-state="open"][role="menu"]',
       );
