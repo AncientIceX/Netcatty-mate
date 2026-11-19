@@ -30,7 +30,7 @@ await page.exposeFunction('fixtureRequest',async(url,method,headers,body)=>{
 await page.addInitScript(()=>{
  window.__errors=[];window.addEventListener('unhandledrejection',e=>window.__errors.push(String(e.reason)));
  const emit=(type,payload)=>window.__onNativeEvent(type,btoa(unescape(encodeURIComponent(JSON.stringify(payload)))));
- window.NativeBridge={getHomeDirSync:()=>'/sandbox',getDeviceSysInfo:()=>'{}',credentialsAvailable:()=>true,credentialsEncrypt:s=>'fixture:'+s,credentialsDecrypt:s=>s.slice(8),setStatusBarColorHex:()=>{},listPortForwardsSync:()=>'[]',
+ window.NativeBridge={startLocalShell:(reqId,sessionId)=>emit('ssh_connected',{reqId,sessionId}),writeTerminalBytesB64:()=>{},resizeSshPty:()=>{},closeSession:()=>{},getSessionRemoteInfoSync:()=>'{}',getHomeDirSync:()=>'/sandbox',getDeviceSysInfo:()=>'{}',credentialsAvailable:()=>true,credentialsEncrypt:s=>'fixture:'+s,credentialsDecrypt:s=>s.slice(8),setStatusBarColorHex:()=>{},listPortForwardsSync:()=>'[]',
  httpFetchAsync:async(reqId,url,method,headers,body)=>{const r=await window.fixtureRequest(url,method,JSON.parse(headers),body);emit('async_response',{reqId,ok:r.status===200,status:r.status,data:r.text});},
  startAiChatStream:async(reqId,requestId,url,headers,body)=>{try{const r=await window.fixtureRequest(url,'POST',JSON.parse(headers),body);emit('async_response',{reqId,ok:true,statusCode:r.status,statusText:'OK'});for(const line of r.text.split('\n'))if(line.startsWith('data: ')&&line!=='data: [DONE]')emit('ai_stream_data',{requestId,data:line.slice(6)});emit('ai_stream_end',{requestId});}catch(e){emit('ai_stream_error',{requestId,error:String(e)});}},cancelAiChatStream:()=>true};
 });
@@ -40,6 +40,7 @@ try{
  await page.locator('input[type=password]').fill('fixture-provider-key');await page.locator('input[placeholder="https://api.openai.com/v1"]').fill('https://fixture.invalid/v1');await page.getByRole('button',{name:/^保存$|^Save$/}).click();await page.waitForTimeout(500);
  await page.evaluate(()=>window.netcatty.closeSettingsWindow());
  console.log('shell buttons',await page.getByRole('button').evaluateAll(es=>es.map(e=>({text:e.innerText,title:e.title,aria:e.getAttribute('aria-label')}))));
+ await page.getByRole('button',{name:/^Terminal$/}).click();await page.waitForTimeout(1500);
  await page.locator('[data-section="top-tabs-toolbar-actions"] button').filter({has:page.locator('svg.lucide-sparkles')}).click();await page.waitForTimeout(1500);
  console.log('chat body',await page.locator('body').innerText());
  console.log('inputs',await page.locator('textarea,input').evaluateAll(es=>es.map(e=>({tag:e.tagName,placeholder:e.placeholder}))));

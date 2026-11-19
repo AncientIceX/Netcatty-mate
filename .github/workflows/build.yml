@@ -77,6 +77,12 @@ jobs:
           node scripts/mobile-webdav-smoke.mjs
           node scripts/mobile-ai-smoke.mjs
           node scripts/mobile-chat-smoke.mjs
+          node --import tsx scripts/mobile-privacy-test.mjs
+          node --import tsx --test infrastructure/ai/harness/modelPrivacy.test.ts
+          git show v3.1.6:infrastructure/mobile/androidBridgePolyfill.ts > "$RUNNER_TEMP/pre-privacy-bridge.ts"
+          if BRIDGE_SOURCE="$RUNNER_TEMP/pre-privacy-bridge.ts" node --import tsx scripts/mobile-privacy-test.mjs > chat-smoke-results/privacy-baseline.log 2>&1; then
+            echo 'Privacy regression did not detect old bridge'; exit 1
+          fi
           node scripts/mobile-cloud-read-test.mjs
           node scripts/mobile-protective-backup-test.mjs
           node --import tsx scripts/mobile-webdav-credentials-test.mjs
