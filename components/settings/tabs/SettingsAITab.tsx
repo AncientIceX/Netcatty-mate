@@ -1028,8 +1028,8 @@ const SettingsAITab: React.FC<SettingsAITabProps> = ({
     <SettingsTabContent value="ai">
       {isAndroidMobileRuntime() && (
         <p role="note" className="rounded-md border border-border p-3 text-xs text-muted-foreground">
-          Android: API providers and local settings are supported. Desktop Agent CLIs,
-          SDKs, the external MCP daemon, and AI privacy enforcement are unavailable.
+          Android: API providers, local settings and session-local AI privacy protection are supported.
+          Desktop Agent CLIs, SDKs and the external MCP daemon are unavailable.
         </p>
       )}
       <Tabs value={activeSubTab} onValueChange={(value) => setActiveSubTab(value as AISettingsSubTab)} className="space-y-5">

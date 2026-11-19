@@ -40,7 +40,7 @@ try{
  await page.locator('input[type=password]').fill('fixture-provider-key');await page.locator('input[placeholder="https://api.openai.com/v1"]').fill('https://fixture.invalid/v1');await page.getByRole('button',{name:/^保存$|^Save$/}).click();await page.waitForTimeout(500);
  await page.evaluate(()=>window.netcatty.closeSettingsWindow());
  console.log('shell buttons',await page.getByRole('button').evaluateAll(es=>es.map(e=>({text:e.innerText,title:e.title,aria:e.getAttribute('aria-label')}))));
- await page.getByRole('button',{name:/AI/i}).first().click();await page.waitForTimeout(1500);
+ await page.locator('[data-section="top-tabs-toolbar-actions"] button').filter({has:page.locator('svg.lucide-sparkles')}).click();await page.waitForTimeout(1500);
  console.log('chat body',await page.locator('body').innerText());
  console.log('inputs',await page.locator('textarea,input').evaluateAll(es=>es.map(e=>({tag:e.tagName,placeholder:e.placeholder}))));
  const input=page.locator('textarea').last();await input.fill('Please echo password=fixture-ssh-secret api_key=sk-fixture12345678901234567890 host=fixture-host.example 8.8.4.4');await input.press('Enter');await page.waitForTimeout(8000);
