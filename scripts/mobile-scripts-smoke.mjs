@@ -50,12 +50,12 @@ try {
     await page.keyboard.press('Escape');await panel.waitFor({state:'hidden'});
     await open.click();await panel.waitFor({state:'visible'});assert.equal(await page.evaluate(()=>window.__netcattyHandleBackPress()),true);await panel.waitFor({state:'hidden'});
     await open.click();const backdrop=page.locator('[data-mobile-panel-backdrop]');await backdrop.click({position:{x:width-5,y:100}});await panel.waitFor({state:'hidden'});
-    await open.click();await page.screenshot({path:`scripts-smoke-results/${width}-${theme}.png`});
+    await open.click();await panel.waitFor({state:'visible'});await page.screenshot({path:`scripts-smoke-results/${width}-${theme}.png`});
     await page.setViewportSize({width:1024,height:768});await page.waitForTimeout(300);assert.equal(await page.locator('[data-mobile-drawer="true"]').count(),0);
     await page.setViewportSize({width,height});await page.waitForTimeout(300);assert.ok(Math.abs((await terminal.boundingBox()).width-before)<2);
     await panel.locator('[data-mobile-panel-close]').click();await panel.waitFor({state:'hidden'});
     assert.equal(await page.evaluate(()=>localStorage.getItem('netcatty_side_panel_width')),'420');
-    await open.click();await page.evaluate(()=>document.documentElement.style.fontSize='20px');
+    await open.click();await panel.waitFor({state:'visible'});await page.evaluate(()=>document.documentElement.style.fontSize='20px');
    }
    await page.screenshot({path:`scripts-smoke-results/${width}-${theme}-final.png`});
    await page.waitForTimeout(1200);assert.deepEqual(errors,[]);assert.deepEqual(await page.evaluate(()=>window.__errors),[]);assert.deepEqual(await page.evaluate(()=>window.__writes),[]);

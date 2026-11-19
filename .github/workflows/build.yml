@@ -122,7 +122,7 @@ jobs:
           node scripts/mobile-vault-key-test.mjs
           git show v3.1.5:infrastructure/mobile/androidBridgePolyfill.ts > "$RUNNER_TEMP/v315-vault-bridge.ts"
           if BRIDGE_SOURCE="$RUNNER_TEMP/v315-vault-bridge.ts" node scripts/mobile-vault-key-test.mjs > cloud-read-results/vault-baseline.log 2>&1; then
-            echo 'Vault regression did not detect v3.1.7 trailing-byte incompatibility'; exit 1
+            echo 'Vault regression did not detect v3.1.8 trailing-byte incompatibility'; exit 1
           fi
           git show v3.1.4:infrastructure/mobile/androidBridgePolyfill.ts > "$RUNNER_TEMP/v314-cloud-bridge.ts"
           if BRIDGE_SOURCE="$RUNNER_TEMP/v314-cloud-bridge.ts" node scripts/mobile-cloud-read-test.mjs > cloud-read-results/baseline.log 2>&1; then
@@ -231,27 +231,27 @@ jobs:
             --ks-key-alias netcattykey \
             --ks-pass env:ANDROID_SIGNING_PASSWORD \
             --key-pass env:ANDROID_SIGNING_PASSWORD \
-            --out dist_apk/Netcatty-Mate-v3.1.7-Android.apk \
+            --out dist_apk/Netcatty-Mate-v3.1.8-Android.apk \
             build_apk/aligned.apk
 
-          ls -lh dist_apk/Netcatty-Mate-v3.1.7-Android.apk
+          ls -lh dist_apk/Netcatty-Mate-v3.1.8-Android.apk
 
       - name: Verify APK signature and publish build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: netcatty-mate-android-v3.1.7
+          name: netcatty-mate-android-v3.1.8
           path: dist_apk/*.apk
 
       - name: Verify signed APK
         run: |
           BUILD_TOOLS=$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)
-          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" verify --verbose --print-certs dist_apk/Netcatty-Mate-v3.1.7-Android.apk
+          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" verify --verbose --print-certs dist_apk/Netcatty-Mate-v3.1.8-Android.apk
 
-      - name: Publish GitHub Release v3.1.7
+      - name: Publish GitHub Release v3.1.8
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist_apk/Netcatty-Mate-v3.1.7-Android.apk \
+          gh release create "$GITHUB_REF_NAME" dist_apk/Netcatty-Mate-v3.1.8-Android.apk \
             -R AncientIceX/Netcatty-mate --draft=false --prerelease=false \
-            --verify-tag --title "Netcatty Mate v3.1.7" --notes-file android/RELEASE-v3.1.7.md
+            --verify-tag --title "Netcatty Mate v3.1.8" --notes-file android/RELEASE-v3.1.8.md
