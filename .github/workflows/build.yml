@@ -5,6 +5,10 @@ on:
     branches: [ main ]
     tags: [ 'v*' ]
   workflow_dispatch:
+    inputs:
+      chat_only:
+        type: boolean
+        default: false
 
 concurrency:
   group: netcatty-android-${{ github.ref }}
@@ -49,6 +53,11 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/boot-tools" --ignore-scripts playwright@1.58.2
           export PLAYWRIGHT_MODULE="$RUNNER_TEMP/boot-tools/node_modules/playwright/index.mjs"
           "$RUNNER_TEMP/boot-tools/node_modules/.bin/playwright" install --with-deps chromium
+          if [ "${{ inputs.chat_only }}" = "true" ]; then
+            npm run build
+            node scripts/mobile-chat-smoke.mjs
+            exit 0
+          fi
           cp infrastructure/mobile/androidBridgePolyfill.ts "$RUNNER_TEMP/fixed-bridge.ts"
           git show v3.1.1:infrastructure/mobile/androidBridgePolyfill.ts > infrastructure/mobile/androidBridgePolyfill.ts
           if node scripts/mobile-startup-test.mjs > baseline-startup.log 2>&1; then
