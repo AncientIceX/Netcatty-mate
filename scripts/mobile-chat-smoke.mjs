@@ -8,6 +8,7 @@ const {chromium}=await import(process.env.PLAYWRIGHT_MODULE||'playwright');
 const baseline=process.argv.includes('--baseline');
 const root=resolve('dist');const wires=[];
 const provider=createServer(async(req,res)=>{
+ if(req.method==='GET'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({data:[{id:'fixture-model',object:'model'}]}));return;}
  let body='';for await(const chunk of req)body+=chunk;
  const parsed=JSON.parse(body);wires.push({url:req.url,headers:req.headers,body:parsed});
  res.writeHead(200,{'Content-Type':'text/event-stream'});
@@ -25,7 +26,7 @@ await new Promise(r=>server.listen(0,'127.0.0.1',r));
 await mkdir('chat-smoke-results',{recursive:true});const browser=await chromium.launch();const page=await browser.newPage({viewport:{width:412,height:915},isMobile:true,hasTouch:true});const errors=[];page.on('pageerror',e=>errors.push(e.stack||e.message));
 await page.exposeFunction('fixtureRequest',async(url,method,headers,body)=>{
  assert.ok(url.startsWith('https://fixture.invalid/v1/'),'No external network allowed');
- const r=await fetch(`http://127.0.0.1:${provider.address().port}/v1/chat/completions`,{method,headers,body});return {status:r.status,text:await r.text()};
+ const r=await fetch(`http://127.0.0.1:${provider.address().port}/v1/chat/completions`,{method,headers,...(method==='GET'||method==='HEAD'?{}:{body})});return {status:r.status,text:await r.text()};
 });
 await page.addInitScript(()=>{
  window.__errors=[];window.addEventListener('unhandledrejection',e=>window.__errors.push(String(e.reason)));
@@ -45,7 +46,7 @@ try{
  console.log('chat body',await page.locator('body').innerText());
  console.log('inputs',await page.locator('textarea,input').evaluateAll(es=>es.map(e=>({tag:e.tagName,placeholder:e.placeholder}))));
  const input=page.locator('textarea[placeholder*="Message Catty"]');
- await page.getByRole('button',{name:/Select provider/}).click();await page.getByRole('option',{name:/OpenAI/}).click();await page.waitForTimeout(500);
+ await page.getByRole('button',{name:/Select provider/}).click();await page.waitForTimeout(1000);
  console.log('picker',await page.locator('body').innerText());
  const modelOption=page.getByRole('option').first();if(await modelOption.count())await modelOption.click();
  await input.fill('Please echo password=fixture-ssh-secret api_key=sk-fixture12345678901234567890 host=fixture-host.example 8.8.4.4');await input.press('Enter');await page.waitForTimeout(8000);
