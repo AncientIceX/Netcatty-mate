@@ -14,6 +14,7 @@ const win = { innerWidth: 400, setTimeout: (fn, ms) => { timers.set(++timerId, {
 function event(type, payload) { win.__onNativeEvent(type, Buffer.from(JSON.stringify(payload)).toString('base64')); }
 const response = (id, data = {}) => event('async_response', { reqId: id, ok: true, ...data });
 const native = new Proxy({
+ vaultBackupAsync: undefined,
  credentialsAvailable: () => true, credentialsDecrypt: s => { assert.equal(s, 'enc:v1:secret'); return 'decrypted-key'; },
  getHomeDirSync: () => '/sandbox',
  httpFetchAsync: (id, ...args) => { calls.push(['http', ...args]); response(id, { status: 200, data: '{}' }); },
@@ -66,7 +67,7 @@ await test('cloud writes blocked; SFTP mutations invoke native', async () => {
  await assert.rejects(bridge.chmodSftp('s','/b','777;rm'), /octal/);
 });
 await test('app lock, backups, OAuth and privacy never claim fake success', async () => {
- for (const name of ['requestAppLockEnable','requestAppLockDisable','requestAppLockUnlock','setAppLockRuntimeLocked','createVaultBackup','clearVaultBackups','prepareOAuthCallback','awaitOAuthCallback','googleExchangeCodeForTokens','onedriveRefreshAccessToken','aiPrivacyTransform']) await assert.rejects(bridge[name]({}), /Unsupported/);
+ for (const name of ['requestAppLockEnable','requestAppLockDisable','requestAppLockUnlock','setAppLockRuntimeLocked','prepareOAuthCallback','awaitOAuthCallback','googleExchangeCodeForTokens','onedriveRefreshAccessToken','aiPrivacyTransform']) await assert.rejects(bridge[name]({}), /Unsupported/);
  assert.equal((await bridge.getVaultBackupCapabilities()).encryptionAvailable,false);
  assert.equal((await bridge.getAppLockSettings()).enabled,false);
 });

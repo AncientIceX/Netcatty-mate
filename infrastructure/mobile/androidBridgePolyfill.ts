@@ -94,6 +94,7 @@ interface AndroidNativeBridge {
   renameLocalFile(oldPath: string, newPath: string): boolean;
   mkdirLocal(dirPath: string): boolean;
 
+  vaultBackupAsync(reqId: string, operation: string, optionsJson: string): void;
   // HTTP & AI Stream
   cloudReadFetchAsync(
     reqId: string, urlStr: string, method: string, headersJson: string,
@@ -153,6 +154,13 @@ function parseWebdavSyncedFile(text: string): any {
       }
     }
     throw error;
+  }
+}
+
+function assertWebdavCredentialsReadable(config: any): void {
+  const secret = config.authType === 'token' ? config.token : config.password;
+  if (typeof secret === 'string' && secret.startsWith('enc:v1:')) {
+    throw new Error('Saved WebDAV credential is unavailable on this device / 此设备无法读取已保存的 WebDAV 凭据，请重新输入服务凭据（不是同步密钥）；未发送请求');
   }
 }
 
@@ -581,6 +589,14 @@ export function installAndroidBridgePolyfill(): void {
       return false;
     }
   };
+
+  async function localBackupNative(operation: string, options: any = {}): Promise<any> {
+    const native = getNative();
+    if (!native?.vaultBackupAsync) throw new Error('Native encrypted local backups unavailable');
+    const response = await callNativeAsync((id) => native.vaultBackupAsync(id, operation, JSON.stringify(options)));
+    if (!response?.ok) throw new Error(response?.error || 'Local encrypted backup failed');
+    return response.result;
+  }
 
   function callNativeAsync<T = any>(
     invoke: (reqId: string) => void,
@@ -2009,6 +2025,7 @@ export function installAndroidBridgePolyfill(): void {
     },
 
     cloudSyncWebdavInitialize: async (config) => {
+      assertWebdavCredentialsReadable(config);
       if (config.authType === 'digest') throw new Error('Android WebDAV Digest authentication is not supported / 暂不支持 Digest 认证；未发送请求，请使用服务器支持的 Basic 或 Bearer');
       const native = cloudReadNative();
       if (!native) throw new Error('NativeBridge unavailable');
@@ -2042,6 +2059,7 @@ export function installAndroidBridgePolyfill(): void {
       return { resourceId: '/netcatty-vault.json' };
     },
     cloudSyncWebdavDownload: async (config) => {
+      assertWebdavCredentialsReadable(config);
       if (config.authType === 'digest') throw new Error('Android WebDAV Digest authentication is not supported / 暂不支持 Digest 认证；未发送请求，请使用服务器支持的 Basic 或 Bearer');
       const native = cloudReadNative();
       if (!native) throw new Error('NativeBridge unavailable');
@@ -2758,9 +2776,25 @@ export function installAndroidBridgePolyfill(): void {
       return result;
     },
     credentialsDecrypt: async (value: string) => {
+      // secureFieldAdapter also calls this for plaintext (fresh config/import).
+      // The native decoder accepts ciphertext only and returns empty on error.
+      if (!value || !value.startsWith('enc:v1:')) return value;
+      // Desktop OSCrypt blobs are device-bound, not legacy mobile plaintext.
+      let desktopCiphertext = false;
+      try {
+        const bytes = atob(value.slice('enc:v1:'.length));
+        desktopCiphertext = ((bytes.startsWith('v10') || bytes.startsWith('v11'))
+          && bytes.length >= 19)
+          || bytes.startsWith('\x01\x00\x00\x00\xd0\x8c\x9d\xdf');
+      } catch { /* Keystore and legacy mobile markers are not bare base64. */ }
+      if (desktopCiphertext) throw new Error('Desktop credential cannot be decrypted on Android / 电脑本机加密凭据无法在 Android 解密，请重新输入服务凭据');
       const native = getNative();
       if (!native) throw new Error('Android credential decryption unavailable');
-      return native.credentialsDecrypt(value);
+      const result = native.credentialsDecrypt(value);
+      if (!result || result === value || result.startsWith('enc:v1:android-keystore:')) {
+        throw new Error('Saved credential cannot be decrypted on this device / 此设备无法解密已保存的凭据，请重新输入服务凭据（不是同步密钥）');
+      }
+      return result;
     },
 
     // ── Clipboard ──
@@ -2784,13 +2818,15 @@ export function installAndroidBridgePolyfill(): void {
     hasClipboardImage: async () => false,
 
     // ── Vault Backups & Dialogs ──
-    getVaultBackupCapabilities: async () => ({ encryptionAvailable: false }),
-    createVaultBackup: unsupportedMobile,
-    listVaultBackups: async () => [],
-    readVaultBackup: unsupportedMobile,
-    trimVaultBackups: unsupportedMobile,
-    clearVaultBackups: unsupportedMobile,
-    openVaultBackupDir: unsupportedMobile,
+    getVaultBackupCapabilities: async () => getNative()?.vaultBackupAsync
+      ? localBackupNative('capabilities') : { encryptionAvailable: false },
+    createVaultBackup: async (options) => localBackupNative('create', options),
+    listVaultBackups: async () => getNative()?.vaultBackupAsync ? localBackupNative('list') : [],
+    readVaultBackup: async (options) => localBackupNative('read', options),
+    trimVaultBackups: async (options) => localBackupNative('trim', options),
+    clearVaultBackups: async () => localBackupNative('clear'),
+    // Internal encrypted files intentionally cannot be exposed through an external file manager.
+    openVaultBackupDir: async () => { throw new Error('Private Android backups are managed in the local backup list'); },
     onVaultBackupsChanged: () => () => {},
 
     showSaveDialog: async (defaultPath?: any) => {

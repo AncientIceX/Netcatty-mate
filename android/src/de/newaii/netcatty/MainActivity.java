@@ -1745,7 +1745,48 @@ public class MainActivity extends Activity {
         return conn;
     }
 
+    private VaultBackups vaultBackups;
+
+    private synchronized VaultBackups vaultBackups() {
+        if (vaultBackups == null) vaultBackups = new VaultBackups(new File(getNoBackupFilesDir(), "vault-backups"),
+                new VaultBackups.Crypto() {
+                    public String encrypt(String text) throws Exception { return CredentialCipher.encrypt(text); }
+                    public String decrypt(String text) throws Exception { return CredentialCipher.decrypt(text); }
+                }, new VaultBackups.DirectorySync() {
+                    public void sync(File directory) throws Exception {
+                        java.io.FileDescriptor fd = android.system.Os.open(directory.getAbsolutePath(),
+                                android.system.OsConstants.O_RDONLY | android.system.OsConstants.O_DIRECTORY, 0);
+                        try { android.system.Os.fsync(fd); } finally { android.system.Os.close(fd); }
+                    }
+                });
+        return vaultBackups;
+    }
+
     public class NetcattyNativeBridge {
+        @JavascriptInterface
+        public void vaultBackupAsync(final String reqId, final String operation, final String optionsJson) {
+            ioPool.execute(new Runnable() {
+                public void run() {
+                    JSONObject response = new JSONObject();
+                    try {
+                        JSONObject options = new JSONObject(optionsJson);
+                        Object result;
+                        if ("capabilities".equals(operation)) result = new JSONObject().put("encryptionAvailable", CredentialCipher.available());
+                        else if ("create".equals(operation)) result = vaultBackups().create(options);
+                        else if ("list".equals(operation)) result = vaultBackups().list();
+                        else if ("read".equals(operation)) result = vaultBackups().read(options.getString("id"));
+                        else if ("trim".equals(operation)) result = vaultBackups().trim(options.optInt("maxCount", 10));
+                        else if ("clear".equals(operation)) result = vaultBackups().clear();
+                        else throw new IllegalArgumentException("Unsupported local backup operation");
+                        response.put("reqId", reqId).put("ok", true).put("result", result);
+                    } catch (Exception e) {
+                        try { response.put("reqId", reqId).put("ok", false).put("error", "Local encrypted backup failed (" + e.getClass().getSimpleName() + ")"); }
+                        catch (Exception ignored) {}
+                    }
+                    emitToJs("async_response", response);
+                }
+            });
+        }
 
         @JavascriptInterface
         public boolean credentialsAvailable() {
