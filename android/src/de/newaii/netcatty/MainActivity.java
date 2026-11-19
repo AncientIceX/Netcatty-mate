@@ -1755,7 +1755,7 @@ public class MainActivity extends Activity {
                 }, new VaultBackups.DirectorySync() {
                     public void sync(File directory) throws Exception {
                         java.io.FileDescriptor fd = android.system.Os.open(directory.getAbsolutePath(),
-                                android.system.OsConstants.O_RDONLY | android.system.OsConstants.O_DIRECTORY, 0);
+                                android.system.OsConstants.O_RDONLY, 0);
                         try { android.system.Os.fsync(fd); } finally { android.system.Os.close(fd); }
                     }
                 });
