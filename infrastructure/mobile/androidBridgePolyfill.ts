@@ -508,6 +508,7 @@ export function installAndroidBridgePolyfill(): void {
     return;
   }
 
+  const privacyService = (window as any).__createAndroidPrivacyService?.();
   window.__netcattyMobileMode = true;
   document.documentElement.setAttribute('data-netcatty-mobile', 'true');
 
@@ -3106,7 +3107,14 @@ export function installAndroidBridgePolyfill(): void {
   const extraBridgeMethods = {
     externalMcpGetStatus: async () => ({ ok: false, enabled: false, state: 'unavailable', error: 'External CLI MCP daemon is desktop-only' }),
     externalMcpSetEnabled: async () => ({ ok: false, error: 'External CLI MCP daemon is desktop-only' } as any),
-    externalMcpSetConfig: async () => ({ ok: false, error: 'MCP configuration and AI privacy enforcement unavailable on Android' }),
+    externalMcpSetConfig: async (config: any) => {
+      try {
+        if (!privacyService || !config || !Object.prototype.hasOwnProperty.call(config, 'redaction')) throw new Error('AI privacy configuration unavailable');
+        if (config.redaction === null) { privacyService.invalidateConfiguration(); throw new Error('Invalid AI privacy configuration'); }
+        privacyService.configure(config.redaction);
+        return { ok: true, enabled: false, state: 'unavailable', redaction: privacyService.getConfig() };
+      } catch { return { ok: false, error: 'Invalid AI privacy configuration' }; }
+    },
     externalMcpCodexGetStatus: async () => ({ ok: false, state: 'error', error: 'Codex MCP integration unavailable on Android' }),
     externalMcpClaudeGetStatus: async () => ({ ok: false, state: 'error', error: 'Claude MCP integration unavailable on Android' }),
     externalMcpGrokGetStatus: async () => ({ ok: false, state: 'error', error: 'Grok MCP integration unavailable on Android' }),
@@ -3236,9 +3244,21 @@ export function installAndroidBridgePolyfill(): void {
     aiSdkAgentCleanup: unsupportedMobile,
     aiSdkAgentListModels: async () => ({ ok: false, models: [], error: 'Desktop agent SDK unavailable on Android' }),
     aiSdkAgentElicitationResponse: unsupportedMobile,
-    aiPrivacyStatus: async () => ({ ok: true, enabled: false }),
-    aiPrivacyTransform: unsupportedMobile,
-    aiPrivacyClearSession: unsupportedMobile,
+    aiPrivacyStatus: async () => {
+      try { return { ok: true, enabled: privacyService.isEnabled() }; }
+      catch { return { ok: false, error: 'AI privacy protection is unavailable' }; }
+    },
+    aiPrivacyTransform: async (request: any) => {
+      try {
+        if (!privacyService) return unsupportedMobile();
+        if (!request || !['redact', 'restore'].includes(request.operation)) throw new Error('Invalid operation');
+        return { ok: true, value: privacyService[request.operation](request.chatSessionId, request.value) };
+      } catch { return { ok: false, error: 'AI privacy protection could not safely process this request' }; }
+    },
+    aiPrivacyClearSession: async (id: string) => {
+      try { privacyService.clearSession(id); return { ok: true }; }
+      catch { return { ok: false, error: 'Invalid AI privacy session' }; }
+    },
     aiCapability: async () => ({ ok: false, error: 'Unsupported capability on Android' } as any),
     deleteChatToolOutputsTemp: unsupportedMobile,
     deleteTerminalToolOutputsEverywhereTemp: unsupportedMobile,

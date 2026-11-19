@@ -122,7 +122,7 @@ export type AIPrivacySettings = {
 };
 
 export function defaultAIPrivacySettings(): AIPrivacySettings {
-  return { enabled: false, redactPrivateIps: false, cidrs: [], patterns: [] };
+  return { enabled: typeof window !== 'undefined' && !!(window as any).__netcattyMobileMode, redactPrivateIps: false, cidrs: [], patterns: [] };
 }
 
 /** Missing settings are opt-out; corrupt settings must never silently opt out. */

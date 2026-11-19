@@ -67,7 +67,7 @@ await test('cloud writes blocked; SFTP mutations invoke native', async () => {
  await assert.rejects(bridge.chmodSftp('s','/b','777;rm'), /octal/);
 });
 await test('app lock, backups, OAuth and privacy never claim fake success', async () => {
- for (const name of ['requestAppLockEnable','requestAppLockDisable','requestAppLockUnlock','setAppLockRuntimeLocked','prepareOAuthCallback','awaitOAuthCallback','googleExchangeCodeForTokens','onedriveRefreshAccessToken','aiPrivacyTransform']) await assert.rejects(bridge[name]({}), /Unsupported/);
+ for (const name of ['requestAppLockEnable','requestAppLockDisable','requestAppLockUnlock','setAppLockRuntimeLocked','prepareOAuthCallback','awaitOAuthCallback','googleExchangeCodeForTokens','onedriveRefreshAccessToken']) await assert.rejects(bridge[name]({}), /Unsupported/);
  assert.equal((await bridge.getVaultBackupCapabilities()).encryptionAvailable,false);
  assert.equal((await bridge.getAppLockSettings()).enabled,false);
 });

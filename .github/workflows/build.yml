@@ -76,6 +76,7 @@ jobs:
           npm run build
           node scripts/mobile-webdav-smoke.mjs
           node scripts/mobile-ai-smoke.mjs
+          node scripts/mobile-chat-smoke.mjs
           node scripts/mobile-cloud-read-test.mjs
           node scripts/mobile-protective-backup-test.mjs
           node --import tsx scripts/mobile-webdav-credentials-test.mjs
@@ -116,6 +117,7 @@ jobs:
             baseline-startup.log
             webdav-smoke-results/
             ai-smoke-results/
+            chat-smoke-results/
             cloud-read-results/
 
       - name: Download JSch 0.2.21 & BouncyCastle 1.79 Libraries

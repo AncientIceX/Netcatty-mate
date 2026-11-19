@@ -75,7 +75,7 @@ try{
    await page.screenshot({path:`ai-smoke-results/tab-${steps.length}.png`});
   }
   const status=await page.evaluate(async()=>({cli:await window.netcatty.aiResolveCli({command:'cursor'}),codex:await window.netcatty.aiCodexGetIntegration(),mcp:await window.netcatty.externalMcpGetStatus(),privacy:await window.netcatty.externalMcpSetConfig({redaction:{enabled:true}}),skills:await window.netcatty.aiUserSkillsOpenFolder(),models:await window.netcatty.aiSdkAgentListModels('cursor')}));
-  assert.equal(status.cli.available,false);assert.equal(status.cli.sdkInstalled,false);assert.equal(status.codex.isConnected,false);for(const key of ['mcp','privacy','skills','models'])assert.equal(status[key].ok,false);
+  assert.equal(status.privacy.ok,true);assert.equal(status.cli.available,false);assert.equal(status.cli.sdkInstalled,false);assert.equal(status.codex.isConnected,false);for(const key of ['mcp','skills','models'])assert.equal(status[key].ok,false);
   steps.push('unsupported sensitive capabilities fail closed with structured results');
   await page.getByRole('tab',{name:/提供商|Providers/i}).click();
   assert.ok(await page.evaluate(()=>Object.values(localStorage).some(v=>v.includes('https://fixture.invalid/v1'))));

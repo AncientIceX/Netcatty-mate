@@ -267,6 +267,8 @@ export function useAIChatStreaming({
         bridge,
         ui: uiCallbacks(),
       });
+    } catch (error) {
+      reportStreamError(sessionId, abortController.signal, error);
     } finally {
       abortControllersRef.current.delete(sessionId);
     }

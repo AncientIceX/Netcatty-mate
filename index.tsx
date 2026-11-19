@@ -1,5 +1,6 @@
 import { StrictMode, Suspense, lazy } from 'react';
 import ReactDOM from 'react-dom/client';
+import { installAndroidPrivacyFactory } from './infrastructure/mobile/androidPrivacy';
 import { installAndroidBridgePolyfill } from './infrastructure/mobile/androidBridgePolyfill';
 import '@fontsource/mona-sans/400.css';
 import '@fontsource/mona-sans/500.css';
@@ -20,6 +21,7 @@ import { STORAGE_KEY_UI_LANGUAGE } from './infrastructure/config/storageKeys';
 import { localStorageAdapter } from './infrastructure/persistence/localStorageAdapter';
 
 // Install Android NativeBridge -> window.netcatty polyfill before app initialization
+installAndroidPrivacyFactory();
 installAndroidBridgePolyfill();
 
 // Startup timeline marks (see electron/perfTrace.cjs); visible in DevTools too.
