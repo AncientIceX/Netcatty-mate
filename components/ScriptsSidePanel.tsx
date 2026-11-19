@@ -961,7 +961,7 @@ const ScriptsSidePanelInner: React.FC<ScriptsSidePanelProps> = ({
       <>
       {/* Icon toolbar + expandable search */}
       <div className="shrink-0 border-b border-border/50">
-        <div className="px-2 py-1.5 flex items-center gap-1">
+        <div data-section="scripts-library-toolbar" className="px-2 py-1.5 flex items-center gap-1">
           <Tooltip>
             <TooltipTrigger asChild>
               <button
@@ -1264,7 +1264,7 @@ const ScriptsSidePanelInner: React.FC<ScriptsSidePanelProps> = ({
           </Tooltip>
         </div>
       ) : null}
-      <div className="shrink-0 px-2 py-2 border-t border-border/50 flex items-center gap-2">
+      <div data-section="scripts-library-footer" className="shrink-0 px-2 py-2 border-t border-border/50 flex items-center gap-2">
         <button
           type="button"
           onClick={handleAddScript}
@@ -1609,7 +1609,7 @@ const SnippetRow = memo<SnippetRowProps>(({
               ) : (
                 <Zap size={12} className="shrink-0 text-muted-foreground" />
               )}
-              <span className="flex-1 min-w-0 truncate text-xs font-medium">{snippet.label}</span>
+              <span title={snippet.label} className="flex-1 min-w-0 truncate text-xs font-medium">{snippet.label}</span>
               {subtitle && (
                 <span className="shrink-0 max-w-[40%] truncate text-[10px] text-muted-foreground">
                   {subtitle}

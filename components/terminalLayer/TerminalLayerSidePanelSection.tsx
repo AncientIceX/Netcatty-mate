@@ -686,8 +686,51 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
 
   const [resizePreviewWidth, setResizePreviewWidth] = useState<number | null>(null);
   const [resizePreviewHeight, setResizePreviewHeight] = useState<number | null>(null);
-  const isBottomDock = sidePanelPosition === 'bottom';
+  const [isCompact, setIsCompact] = useState(() => window.matchMedia('(max-width: 767px)').matches);
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 767px)');
+    const update = () => setIsCompact(media.matches);
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+  const isDrawerOpen = isCompact && isSidePanelOpenForCurrentTab;
+  const isBottomDock = !isCompact && sidePanelPosition === 'bottom';
   const shellRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!isDrawerOpen) return;
+    const shell = shellRef.current;
+    if (!shell) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const siblings = [...(shell.parentElement?.children ?? [])]
+      .filter((node): node is HTMLElement => node instanceof HTMLElement && node !== shell
+        && !node.hasAttribute('data-mobile-panel-backdrop'));
+    const inertValues = siblings.map(node => node.inert);
+    siblings.forEach(node => { node.inert = true; });
+    shell.querySelector<HTMLElement>('[data-mobile-panel-close]')?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      // Nested dialogs and menus own their own Escape/Tab first.
+      if (document.querySelector('[data-radix-popper-content-wrapper], [role="dialog"][data-state="open"]:not([data-mobile-drawer])')) return;
+      if (event.key === 'Escape') {
+        event.preventDefault(); event.stopPropagation(); handleCloseSidePanel();
+      } else if (event.key === 'Tab') {
+        const controls = [...shell.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"]')]
+          .filter(node => node.getClientRects().length > 0);
+        const first = controls[0], last = controls[controls.length - 1];
+        if (event.shiftKey && (document.activeElement === first || !shell.contains(document.activeElement))) {
+          event.preventDefault(); last?.focus();
+        } else if (!event.shiftKey && (document.activeElement === last || !shell.contains(document.activeElement))) {
+          event.preventDefault(); first?.focus();
+        }
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      siblings.forEach((node, i) => { node.inert = inertValues[i]; });
+      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+    };
+  }, [isDrawerOpen, handleCloseSidePanel]);
   const shellResizeCleanupRef = useRef<(() => void) | null>(null);
   const updateAvailableSurfaceRef = useRef<() => void>(() => {});
   const [availableSurfaceWidth, setAvailableSurfaceWidth] = useState(0);
@@ -900,7 +943,9 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
       sidePanelContentMinimumHeight,
     )
     : 0;
-  const shellSize = isBottomDock ? shellHeight : shellWidth;
+  const shellSize = isCompact
+    ? (isSidePanelOpenForCurrentTab ? Math.min(360, terminalLayerWidth * 0.88) : 0)
+    : (isBottomDock ? shellHeight : shellWidth);
 
   const handleSidePanelResizeStart = useCallback((event: React.MouseEvent) => {
     if (!isSidePanelOpenForCurrentTab) return;
@@ -1188,7 +1233,7 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
   }, [activeSidePanelTab, availableSidePanelTabs, partitionSidePanelTabs]);
   // Bottom dock spans the full layer width (below the workspace focus
   // sidebar row), so measure tab overflow against the terminal layer itself.
-  const sidePanelTabFitWidth = isBottomDock ? terminalLayerWidth : shellWidth;
+  const sidePanelTabFitWidth = isCompact ? shellSize : (isBottomDock ? terminalLayerWidth : shellWidth);
   const { shown: shownSidePanelTabs, collapsed: collapsedSidePanelTabs } = useMemo(
     () => fitTerminalSidePanelTabs({
       shown: configuredShownSidePanelTabs,
@@ -1219,8 +1264,17 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
 
   return (
     <>
+    {isDrawerOpen && <button type="button" tabIndex={-1}
+      data-mobile-panel-backdrop="true" aria-label={t('terminal.layer.closePanel')}
+      className="absolute inset-0 z-40 bg-black/50"
+      onClick={handleCloseSidePanel} />}
     <div
       ref={shellRef}
+      role={isDrawerOpen ? 'dialog' : undefined}
+      aria-modal={isDrawerOpen ? true : undefined}
+      aria-label={isDrawerOpen ? t('terminal.layer.scripts') : undefined}
+      data-state={isDrawerOpen ? 'open' : undefined}
+      data-mobile-drawer={isCompact ? 'true' : undefined}
       inert={activeMagnifiedPane ? true : undefined}
       style={{
         ...(isBottomDock
@@ -1230,7 +1284,7 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
           }
           : {
             width: shellSize,
-            maxWidth: getTerminalSidePanelMaxWidth(availableSurfaceWidth),
+            maxWidth: isCompact ? '88%' : getTerminalSidePanelMaxWidth(availableSurfaceWidth),
           }),
         contain: 'layout paint style',
       }}
@@ -1401,7 +1455,7 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
                 </div>
               </ToolbarOverflowMenu>
               <div className="flex-1" />
-              {focusedPane && (
+              {!isCompact && focusedPane && (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Btn
@@ -1420,6 +1474,7 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
                   </TooltipContent>
                 </Tooltip>
               )}
+              <div className="side-panel-desktop-tools contents">
               <SidePanelSplitMenu
                 direction="horizontal"
                 items={sidePanelTabItems}
@@ -1474,6 +1529,7 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
                 t={t}
                 buttonColor={sidePanelTheme.mutedFg}
               />
+              </div>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Btn
@@ -1482,6 +1538,8 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
                     className="h-7 w-7 shrink-0 rounded-md p-0 hover:bg-transparent"
                     style={{ color: sidePanelTheme.mutedFg }}
                     onClick={handleCloseSidePanel}
+                    data-mobile-panel-close="true"
+                    aria-label={t('terminal.layer.closePanel')}
                   >
                     <X size={15} />
                   </Btn>

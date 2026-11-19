@@ -85,6 +85,14 @@ jobs:
           npm run build
           node scripts/mobile-webdav-smoke.mjs
           node scripts/mobile-ai-smoke.mjs
+          node scripts/mobile-scripts-smoke.mjs
+          cp components/terminalLayer/TerminalLayerSidePanelSection.tsx "$RUNNER_TEMP/fixed-side-panel.tsx"
+          git show v3.1.7:components/terminalLayer/TerminalLayerSidePanelSection.tsx > components/terminalLayer/TerminalLayerSidePanelSection.tsx
+          npm run build
+          node scripts/mobile-scripts-smoke.mjs --baseline
+          cp "$RUNNER_TEMP/fixed-side-panel.tsx" components/terminalLayer/TerminalLayerSidePanelSection.tsx
+          npm run build
+          node --import tsx --test components/terminalLayer/TerminalLayerSidePanelSection.test.ts components/ScriptsSidePanel.test.ts
           node --import tsx scripts/mobile-chat-network-test.mjs
           node --import tsx scripts/mobile-privacy-test.mjs
           node --import tsx --test infrastructure/ai/harness/modelPrivacy.test.ts
@@ -136,6 +144,7 @@ jobs:
             ai-smoke-results/
             chat-smoke-results/
             cloud-read-results/
+            scripts-smoke-results/
 
       - name: Download JSch 0.2.21 & BouncyCastle 1.79 Libraries
         run: |

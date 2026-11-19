@@ -1,0 +1,44 @@
+/* Temporary mobile presentation only: never persist compact widths/dock changes. */
+@media (max-width: 767px) {
+  [data-mobile-drawer="true"] {
+    position: absolute !important;
+    inset: 0 auto 0 0;
+    height: 100%;
+    z-index: 45 !important;
+    box-shadow: 6px 0 24px #0005;
+  }
+  [data-mobile-drawer] [data-section="terminal-side-panel-resizer"],
+  [data-mobile-drawer] .side-panel-desktop-tools { display: none; }
+  [data-mobile-drawer] [data-section="terminal-side-panel-tabs"] {
+    height: auto;
+    min-height: 52px;
+  }
+  [data-mobile-drawer] [data-section="terminal-side-panel-tabs"] button {
+    min-width: 44px;
+    min-height: 44px;
+    flex-shrink: 0;
+  }
+  [data-mobile-drawer] [data-section="snippets-panel"] > div:first-child {
+    height: auto;
+    min-height: 48px;
+    flex-shrink: 0;
+  }
+  [data-mobile-drawer] [data-section="snippets-panel"] button {
+    min-height: 44px;
+  }
+  [data-mobile-drawer] [data-section="scripts-library-toolbar"] {
+    flex-wrap: wrap;
+  }
+  [data-mobile-drawer] [data-section="scripts-library-toolbar"] button {
+    min-width: 44px;
+    flex-shrink: 0;
+  }
+  [data-mobile-drawer] [data-section="scripts-library-footer"] {
+    flex-wrap: wrap;
+  }
+  [data-mobile-drawer] [data-section="scripts-library-footer"] button {
+    height: auto;
+    white-space: normal;
+    padding: 8px;
+  }
+}

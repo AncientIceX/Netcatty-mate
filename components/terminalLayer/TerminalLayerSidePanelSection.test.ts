@@ -367,7 +367,7 @@ test('side panel close button stays visible at every panel width', () => {
   // rightmost item of the nowrap toolbar row. Closing is a core function, so
   // it must never be a flex-shrink victim and must never carry responsive
   // hiding classes; secondary toolbar actions yield first instead.
-  const closeLabelIndex = sectionSource.indexOf("t('terminal.layer.closePanel')");
+  const closeLabelIndex = sectionSource.lastIndexOf("t('terminal.layer.closePanel')");
   assert.ok(closeLabelIndex > 0, 'close button tooltip label is rendered');
   const closeSlice = sectionSource.slice(Math.max(0, closeLabelIndex - 600), closeLabelIndex);
   assert.match(closeSlice, /onClick=\{handleCloseSidePanel\}/);
