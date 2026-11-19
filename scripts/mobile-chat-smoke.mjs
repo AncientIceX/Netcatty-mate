@@ -45,7 +45,7 @@ try{
  console.log('chat body',await page.locator('body').innerText());
  console.log('inputs',await page.locator('textarea,input').evaluateAll(es=>es.map(e=>({tag:e.tagName,placeholder:e.placeholder}))));
  const input=page.locator('textarea[placeholder*="Message Catty"]');
- await page.getByRole('button',{name:/Select provider/}).click();await page.getByRole('button',{name:/OpenAI/}).last().click();await page.waitForTimeout(500);
+ await page.getByRole('button',{name:/Select provider/}).click();await page.getByRole('option',{name:/OpenAI/}).click();await page.waitForTimeout(500);
  console.log('picker',await page.locator('body').innerText());
  const modelOption=page.getByRole('option').first();if(await modelOption.count())await modelOption.click();
  await input.fill('Please echo password=fixture-ssh-secret api_key=sk-fixture12345678901234567890 host=fixture-host.example 8.8.4.4');await input.press('Enter');await page.waitForTimeout(8000);
