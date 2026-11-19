@@ -49,7 +49,7 @@ assert.equal(await bridge.getHomeDir(),'/sandbox');
 assert.equal((await bridge.getSystemInfo()).hostname,'Android smoke');
 assert.equal((await bridge.getUpdateStatus()).status,'idle');
 assert.ok(Array.isArray(await bridge.scriptGetRuns()));
-for (const name of ['requestAppLockEnable','prepareOAuthCallback','aiMcpUpdateSessions']) await assert.rejects(bridge[name]({}), /Unsupported on Android/);
+for (const name of ['requestAppLockEnable','prepareOAuthCallback']) await assert.rejects(bridge[name]({}), /Unsupported on Android/);
 await new Promise(resolve=>setImmediate(resolve));
 process.off('unhandledRejection',onUnhandled);
 assert.deepEqual({defects,unhandled},{defects:[],unhandled:[]});

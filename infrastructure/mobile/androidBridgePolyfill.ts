@@ -2952,7 +2952,7 @@ export function installAndroidBridgePolyfill(): void {
       skills: [],
       warnings: [],
     }),
-    aiMcpUpdateSessions: unsupportedMobile,
+    // No desktop MCP session catalog on Android; optional publisher omitted.
     aiMcpUpdateLiveSessions: unsupportedMobile,
     aiMcpMergeSessions: unsupportedMobile,
     aiMcpUpdateAttachments: unsupportedMobile,

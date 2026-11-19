@@ -44,7 +44,11 @@ try{
  await page.locator('[data-section="top-tabs-toolbar-actions"] button').filter({has:page.locator('svg.lucide-sparkles')}).click();await page.waitForTimeout(1500);
  console.log('chat body',await page.locator('body').innerText());
  console.log('inputs',await page.locator('textarea,input').evaluateAll(es=>es.map(e=>({tag:e.tagName,placeholder:e.placeholder}))));
- const input=page.locator('textarea').last();await input.fill('Please echo password=fixture-ssh-secret api_key=sk-fixture12345678901234567890 host=fixture-host.example 8.8.4.4');await input.press('Enter');await page.waitForTimeout(8000);
+ const input=page.locator('textarea[placeholder*="Message Catty"]');
+ await page.getByRole('button',{name:/Select provider/}).click();await page.getByRole('button',{name:/OpenAI/}).last().click();await page.waitForTimeout(500);
+ console.log('picker',await page.locator('body').innerText());
+ const modelOption=page.getByRole('option').first();if(await modelOption.count())await modelOption.click();
+ await input.fill('Please echo password=fixture-ssh-secret api_key=sk-fixture12345678901234567890 host=fixture-host.example 8.8.4.4');await input.press('Enter');await page.waitForTimeout(8000);
  const text=await page.locator('body').innerText();console.log('after send',text);
  if(baseline){assert.equal(wires.length,0);assert.match(text,/privacy protection is unavailable/);}else{
  assert.ok(wires.length>0,'actual UI send must reach provider');const wire=JSON.stringify(wires);
