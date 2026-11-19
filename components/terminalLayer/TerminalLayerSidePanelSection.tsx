@@ -710,7 +710,7 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
     const onKey = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
       // Nested dialogs and menus own their own Escape/Tab first.
-      if (document.querySelector('[data-radix-popper-content-wrapper], [role="dialog"][data-state="open"]:not([data-mobile-drawer])')) return;
+      if (document.querySelector('[role="menu"][data-state="open"], [role="listbox"], [role="dialog"][data-state="open"]:not([data-mobile-drawer])')) return;
       if (event.key === 'Escape') {
         event.preventDefault(); event.stopPropagation(); handleCloseSidePanel();
       } else if (event.key === 'Tab') {

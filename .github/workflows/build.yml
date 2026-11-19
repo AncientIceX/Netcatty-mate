@@ -6,6 +6,9 @@ on:
     tags: [ 'v*' ]
   workflow_dispatch:
     inputs:
+      scripts_only:
+        type: boolean
+        default: false
       chat_only:
         type: boolean
         default: false
@@ -53,6 +56,13 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/boot-tools" --ignore-scripts playwright@1.58.2
           export PLAYWRIGHT_MODULE="$RUNNER_TEMP/boot-tools/node_modules/playwright/index.mjs"
           "$RUNNER_TEMP/boot-tools/node_modules/.bin/playwright" install --with-deps chromium
+          if [ "${{ inputs.scripts_only }}" = "true" ]; then
+            npm run build
+            node scripts/mobile-scripts-smoke.mjs
+            mkdir -p android/assets/www
+            cp -r dist/* android/assets/www/
+            exit 0
+          fi
           if [ "${{ inputs.chat_only }}" = "true" ]; then
             npm run build
             node --import tsx scripts/mobile-chat-network-test.mjs
