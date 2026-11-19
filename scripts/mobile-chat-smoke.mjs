@@ -40,7 +40,7 @@ try{
  await page.locator('input[type=password]').fill('fixture-provider-key');await page.locator('input[placeholder="https://api.openai.com/v1"]').fill('https://fixture.invalid/v1');await page.getByRole('button',{name:/^保存$|^Save$/}).click();await page.waitForTimeout(500);
  await page.evaluate(()=>window.netcatty.closeSettingsWindow());
  console.log('shell buttons',await page.getByRole('button').evaluateAll(es=>es.map(e=>({text:e.innerText,title:e.title,aria:e.getAttribute('aria-label')}))));
- await page.getByRole('button',{name:/^Terminal$/}).click();await page.waitForTimeout(1500);
+ await page.getByRole('button',{name:/^Terminal$/}).focus();await page.keyboard.press('Enter');await page.waitForTimeout(1500);
  await page.locator('[data-section="top-tabs-toolbar-actions"] button').filter({has:page.locator('svg.lucide-sparkles')}).click();await page.waitForTimeout(1500);
  console.log('chat body',await page.locator('body').innerText());
  console.log('inputs',await page.locator('textarea,input').evaluateAll(es=>es.map(e=>({tag:e.tagName,placeholder:e.placeholder}))));

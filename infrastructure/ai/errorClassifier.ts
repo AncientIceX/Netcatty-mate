@@ -147,6 +147,9 @@ function looksLikeZodParseError(message: string): boolean {
  */
 export function classifyError(error: unknown): ErrorInfo {
   const rawMessage = extractMessage(error).trim() || 'Unknown error';
+  if (/AI privacy protection|AI privacy settings|AI privacy session/i.test(rawMessage)) {
+    return { type: 'unknown', message: 'AI 隐私保护未能完成，聊天已安全停止，未发送未保护的请求。请检查隐私设置，或新建聊天后重试。', retryable: false };
+  }
   const statusCode = extractStatusCode(error, rawMessage);
   const responseBody = extractResponseBody(error);
 
