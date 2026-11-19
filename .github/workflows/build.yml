@@ -55,7 +55,7 @@ jobs:
           "$RUNNER_TEMP/boot-tools/node_modules/.bin/playwright" install --with-deps chromium
           if [ "${{ inputs.chat_only }}" = "true" ]; then
             npm run build
-            node scripts/mobile-chat-smoke.mjs
+            node --import tsx scripts/mobile-chat-network-test.mjs
             exit 0
           fi
           cp infrastructure/mobile/androidBridgePolyfill.ts "$RUNNER_TEMP/fixed-bridge.ts"
@@ -85,9 +85,11 @@ jobs:
           npm run build
           node scripts/mobile-webdav-smoke.mjs
           node scripts/mobile-ai-smoke.mjs
-          node scripts/mobile-chat-smoke.mjs
+          node --import tsx scripts/mobile-chat-network-test.mjs
           node --import tsx scripts/mobile-privacy-test.mjs
           node --import tsx --test infrastructure/ai/harness/modelPrivacy.test.ts
+          mkdir -p chat-smoke-results
+          printf '%s\n' 'SKIPPED: production UI provider-selection/send interaction; no real provider credentials; isolated runtime/network fixture below.' > chat-smoke-results/UI-SKIPPED.txt
           git show v3.1.6:infrastructure/mobile/androidBridgePolyfill.ts > "$RUNNER_TEMP/pre-privacy-bridge.ts"
           if BRIDGE_SOURCE="$RUNNER_TEMP/pre-privacy-bridge.ts" node --import tsx scripts/mobile-privacy-test.mjs > chat-smoke-results/privacy-baseline.log 2>&1; then
             echo 'Privacy regression did not detect old bridge'; exit 1
@@ -102,7 +104,7 @@ jobs:
           node scripts/mobile-vault-key-test.mjs
           git show v3.1.5:infrastructure/mobile/androidBridgePolyfill.ts > "$RUNNER_TEMP/v315-vault-bridge.ts"
           if BRIDGE_SOURCE="$RUNNER_TEMP/v315-vault-bridge.ts" node scripts/mobile-vault-key-test.mjs > cloud-read-results/vault-baseline.log 2>&1; then
-            echo 'Vault regression did not detect v3.1.6 trailing-byte incompatibility'; exit 1
+            echo 'Vault regression did not detect v3.1.7 trailing-byte incompatibility'; exit 1
           fi
           git show v3.1.4:infrastructure/mobile/androidBridgePolyfill.ts > "$RUNNER_TEMP/v314-cloud-bridge.ts"
           if BRIDGE_SOURCE="$RUNNER_TEMP/v314-cloud-bridge.ts" node scripts/mobile-cloud-read-test.mjs > cloud-read-results/baseline.log 2>&1; then
@@ -210,27 +212,27 @@ jobs:
             --ks-key-alias netcattykey \
             --ks-pass env:ANDROID_SIGNING_PASSWORD \
             --key-pass env:ANDROID_SIGNING_PASSWORD \
-            --out dist_apk/Netcatty-Mate-v3.1.6-Android.apk \
+            --out dist_apk/Netcatty-Mate-v3.1.7-Android.apk \
             build_apk/aligned.apk
 
-          ls -lh dist_apk/Netcatty-Mate-v3.1.6-Android.apk
+          ls -lh dist_apk/Netcatty-Mate-v3.1.7-Android.apk
 
       - name: Verify APK signature and publish build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: netcatty-mate-android-v3.1.6
+          name: netcatty-mate-android-v3.1.7
           path: dist_apk/*.apk
 
       - name: Verify signed APK
         run: |
           BUILD_TOOLS=$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)
-          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" verify --verbose --print-certs dist_apk/Netcatty-Mate-v3.1.6-Android.apk
+          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" verify --verbose --print-certs dist_apk/Netcatty-Mate-v3.1.7-Android.apk
 
-      - name: Publish GitHub Release v3.1.6
+      - name: Publish GitHub Release v3.1.7
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist_apk/Netcatty-Mate-v3.1.6-Android.apk \
+          gh release create "$GITHUB_REF_NAME" dist_apk/Netcatty-Mate-v3.1.7-Android.apk \
             -R AncientIceX/Netcatty-mate --draft=false --prerelease=false \
-            --verify-tag --title "Netcatty Mate v3.1.6" --notes-file android/RELEASE-v3.1.6.md
+            --verify-tag --title "Netcatty Mate v3.1.7" --notes-file android/RELEASE-v3.1.7.md
