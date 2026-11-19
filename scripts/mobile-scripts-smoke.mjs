@@ -48,7 +48,7 @@ try {
     assert.ok(await panel.evaluate(e=>e.scrollWidth<=e.clientWidth+1));
     await page.keyboard.press('Tab');assert.ok(await panel.evaluate(e=>e.contains(document.activeElement)));
     await page.keyboard.press('Escape');await panel.waitFor({state:'hidden'});
-    await open.click();assert.equal(await page.evaluate(()=>window.__netcattyHandleBackPress()),true);await panel.waitFor({state:'hidden'});
+    await open.click();await panel.waitFor({state:'visible'});assert.equal(await page.evaluate(()=>window.__netcattyHandleBackPress()),true);await panel.waitFor({state:'hidden'});
     await open.click();const backdrop=page.locator('[data-mobile-panel-backdrop]');await backdrop.click({position:{x:width-5,y:100}});await panel.waitFor({state:'hidden'});
     await open.click();await page.screenshot({path:`scripts-smoke-results/${width}-${theme}.png`});
     await page.setViewportSize({width:1024,height:768});await page.waitForTimeout(300);assert.equal(await page.locator('[data-mobile-drawer="true"]').count(),0);
