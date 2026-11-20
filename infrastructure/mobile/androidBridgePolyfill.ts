@@ -1129,6 +1129,8 @@ export function installAndroidBridgePolyfill(): void {
       const native = getNative();
       const sessionId = options.sessionId || `telnet-${Date.now()}`;
       if (!native) throw new Error('NativeBridge unavailable');
+      resetOutputFlow(sessionId);
+      cancelPendingPasteWrites(sessionId);
       return new Promise<string>((resolve, reject) => {
         const reqId = nextReqId('tcp-conn');
         const timer = window.setTimeout(() => {
@@ -1148,6 +1150,8 @@ export function installAndroidBridgePolyfill(): void {
       const native = getNative();
       const sessionId = options?.sessionId || `local-${Date.now()}`;
       if (!native) throw new Error('NativeBridge unavailable');
+      resetOutputFlow(sessionId);
+      cancelPendingPasteWrites(sessionId);
       return new Promise<string>((resolve, reject) => {
         const reqId = nextReqId('local-sh');
         const timer = window.setTimeout(() => {

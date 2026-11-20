@@ -34,4 +34,6 @@ off();const noAck=b.onTerminalOutputDrainRequest('a',()=>{});const d=await b.acq
 // No listener: native credit bounds undelivered backlog, without truncation.
 const detached=Buffer.from('z'.repeat(180000));for(let i=0;i<detached.length;i+=4096)session('z').pending.push(detached.subarray(i,i+4096));pump('z');assert.ok(session('z').credit<=65536);assert.ok(session('z').pending.length>0);
 const replay=[];b.onSessionData('z',s=>replay.push(s),{replayBacklog:false});await new Promise(r=>setImmediate(r));assert.equal(replay.join(''),detached.toString());assert.equal(session('z').credit,0);
+const originalAcquire=b.acquireSessionFlowPauseLease;
+const pendingLease=await originalAcquire('a');const pendingDrain=b.onTerminalOutputDrainRequest('a',()=>{});const pendingWait=b.waitSessionFlowPauseLease('a',pendingLease.leaseId);await Promise.resolve();await Promise.resolve();b.closeSession('a');assert.equal((await pendingWait).success,false);pendingDrain();
 console.log('PASS real Android bridge: native gate/barrier, renderer drain, 5000 ordered UTF8 rows, concurrent leases/direct watermark, keepPaused, expiry, isolation, close/reconnect, input unaffected, drain timeout, bounded 180000-byte detached replay');
