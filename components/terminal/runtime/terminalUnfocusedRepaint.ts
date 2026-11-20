@@ -225,7 +225,7 @@ export async function runWithTerminalOutputPausedAfterWritesSettle(
     lease = sessionId ? await backend.acquireSessionFlowPauseLease(sessionId) : null;
     if (lease) {
       const paused = await lease.waitForPause() as { success?: boolean } | undefined;
-      if (!paused?.success) return false;
+      if (paused && paused.success === false) return false;
     }
 
     const settled = await flushPendingTerminalWritesBeforeHibernate(term);

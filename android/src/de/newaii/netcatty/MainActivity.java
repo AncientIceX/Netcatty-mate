@@ -1941,6 +1941,7 @@ public class MainActivity extends Activity {
                 public void run() {
                     String sessionId = "";
                     long t0 = System.currentTimeMillis();
+                    TerminalOutputFlow ownedOutputFlow = null;
                     try {
                         JSONObject cfg = new JSONObject(jsonConfig);
                         sessionId = cfg.optString("sessionId", "");
@@ -1965,6 +1966,7 @@ public class MainActivity extends Activity {
                         sshSessions.put(sessionId, ctx);
 
                         final TerminalOutputFlow outputFlow = new TerminalOutputFlow();
+                        ownedOutputFlow = outputFlow;
                         terminalOutputFlows.put(sessionId, outputFlow);
                         JSONObject openEv = new JSONObject();
                         openEv.put("reqId", reqId);
@@ -1987,6 +1989,7 @@ public class MainActivity extends Activity {
                         }
                         outputFlow.finish();
 
+                        if (terminalOutputFlows.get(sessionId) != outputFlow) return;
                         int exitCode = channel.getExitStatus();
                         closeSessionInternal(sessionId);
                         JSONObject exitEv = new JSONObject();
@@ -1995,6 +1998,7 @@ public class MainActivity extends Activity {
                         exitEv.put("code", exitCode);
                         emitToJs("terminal_exit", exitEv);
                     } catch (Exception e) {
+                        if (ownedOutputFlow != null && terminalOutputFlows.get(sessionId) != ownedOutputFlow) return;
                         closeSessionInternal(sessionId);
                         try {
                             JSONObject errEv = new JSONObject();
@@ -2108,6 +2112,7 @@ public class MainActivity extends Activity {
             ioPool.execute(new Runnable() {
                 @Override
                 public void run() {
+                    TerminalOutputFlow ownedOutputFlow = null;
                     try {
                         closeSessionInternal(sessionId);
                         File workDir = (initDir != null && !initDir.isEmpty()) ? new File(initDir) : getFilesDir();
@@ -2124,6 +2129,7 @@ public class MainActivity extends Activity {
                         localShells.put(sessionId, proc);
 
                         final TerminalOutputFlow outputFlow = new TerminalOutputFlow();
+                        ownedOutputFlow = outputFlow;
                         terminalOutputFlows.put(sessionId, outputFlow);
                         JSONObject openEv = new JSONObject();
                         openEv.put("reqId", reqId);
@@ -2138,14 +2144,17 @@ public class MainActivity extends Activity {
                             emitRawTerminalBytes(sessionId, outputFlow, buf, n);
                         }
                         outputFlow.finish();
+                        if (terminalOutputFlows.get(sessionId) != outputFlow) return;
                         int code = proc.waitFor();
-                        localShells.remove(sessionId);
+                        closeSessionInternal(sessionId);
                         JSONObject exitEv = new JSONObject();
                         exitEv.put("sessionId", sessionId);
                         exitEv.put("exitCode", code);
                         exitEv.put("code", code);
                         emitToJs("terminal_exit", exitEv);
                     } catch (Exception e) {
+                        if (ownedOutputFlow != null && terminalOutputFlows.get(sessionId) != ownedOutputFlow) return;
+                        closeSessionInternal(sessionId);
                         try {
                             JSONObject errEv = new JSONObject();
                             errEv.put("reqId", reqId);
@@ -2167,6 +2176,7 @@ public class MainActivity extends Activity {
                 @Override
                 public void run() {
                     long t0 = System.currentTimeMillis();
+                    TerminalOutputFlow ownedOutputFlow = null;
                     try {
                         closeSessionInternal(sessionId);
                         Socket sock = new Socket();
@@ -2176,6 +2186,7 @@ public class MainActivity extends Activity {
                         tcpSockets.put(sessionId, sock);
 
                         final TerminalOutputFlow outputFlow = new TerminalOutputFlow();
+                        ownedOutputFlow = outputFlow;
                         terminalOutputFlows.put(sessionId, outputFlow);
                         JSONObject openEv = new JSONObject();
                         openEv.put("reqId", reqId);
@@ -2192,13 +2203,16 @@ public class MainActivity extends Activity {
                             emitRawTerminalBytes(sessionId, outputFlow, buf, n);
                         }
                         outputFlow.finish();
-                        tcpSockets.remove(sessionId);
+                        if (terminalOutputFlows.get(sessionId) != outputFlow) return;
+                        closeSessionInternal(sessionId);
                         JSONObject exitEv = new JSONObject();
                         exitEv.put("sessionId", sessionId);
                         exitEv.put("exitCode", 0);
                         exitEv.put("code", 0);
                         emitToJs("terminal_exit", exitEv);
                     } catch (Exception e) {
+                        if (ownedOutputFlow != null && terminalOutputFlows.get(sessionId) != ownedOutputFlow) return;
+                        closeSessionInternal(sessionId);
                         try {
                             JSONObject errEv = new JSONObject();
                             errEv.put("reqId", reqId);

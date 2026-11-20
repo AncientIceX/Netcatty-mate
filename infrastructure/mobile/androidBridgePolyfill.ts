@@ -630,7 +630,9 @@ export function installAndroidBridgePolyfill(): void {
     const barrier = await state.barrier;
     if (!barrier.success) return barrier;
     if (flowStates.get(sessionId) !== state || (leaseId && !state.leases.has(leaseId))) return { success: false, error: 'Terminal flow pause lease expired' };
-    return drainOutput(sessionId);
+    const drained = await drainOutput(sessionId);
+    if (flowStates.get(sessionId) !== state || (leaseId && !state.leases.has(leaseId))) return { success: false, error: 'Terminal flow pause lease expired' };
+    return drained;
   }
 
   // Install global Android hardware back-button handler
@@ -1337,7 +1339,7 @@ export function installAndroidBridgePolyfill(): void {
         if (backlog) {
           queueMicrotask(() => {
             if (!active) {
-              sessionBacklog.set(sessionId, backlog + (sessionBacklog.get(sessionId) || ''));
+              sessionBacklog.set(sessionId, backlog + queued.map(([data]) => data).join('') + (sessionBacklog.get(sessionId) || ''));
               backlogBytes.set(sessionId, credit + (backlogBytes.get(sessionId) || 0));
               return;
             }
@@ -1357,7 +1359,7 @@ export function installAndroidBridgePolyfill(): void {
       }
       return () => {
         active = false;
-        queued.length = 0;
+        if (!replaying) queued.length = 0;
         const set = dataListeners.get(sessionId);
         set?.delete(listener);
         if (set && set.size === 0) dataListeners.delete(sessionId);
