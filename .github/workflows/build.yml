@@ -190,8 +190,8 @@ jobs:
       - name: Download JSch 0.2.21 & BouncyCastle 1.79 Libraries
         run: |
           mkdir -p build_libs
-          curl -fsSL https://repo1.maven.org/maven2/com/github/mwiede/jsch/0.2.21/jsch-0.2.21.jar -o build_libs/jsch.jar
-          curl -fsSL https://repo1.maven.org/maven2/org/bouncycastle/bcprov-jdk18on/1.79/bcprov-jdk18on-1.79.jar -o build_libs/bcprov.jar
+          curl -fsSL https://repo.maven.apache.org/maven2/com/github/mwiede/jsch/0.2.21/jsch-0.2.21.jar -o build_libs/jsch.jar
+          curl -fsSL https://repo.maven.apache.org/maven2/org/bouncycastle/bcprov-jdk18on/1.79/bcprov-jdk18on-1.79.jar -o build_libs/bcprov.jar
           ls -lh build_libs/
 
       - name: Execute production terminal output gate concurrency test
