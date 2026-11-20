@@ -220,17 +220,12 @@ export async function runWithTerminalOutputPausedAfterWritesSettle(
   operation: () => void,
   shouldResumeBackend: () => boolean = () => true,
 ): Promise<boolean> {
-  const lease = sessionId
-    ? await backend.acquireSessionFlowPauseLease(sessionId)
-    : null;
+  let lease: Awaited<ReturnType<TerminalOutputPauseBackend['acquireSessionFlowPauseLease']>> | null = null;
   try {
+    lease = sessionId ? await backend.acquireSessionFlowPauseLease(sessionId) : null;
     if (lease) {
-      try {
-        await lease.waitForPause();
-      } catch {
-        // Acquiring the main-process lease already paused the source. Continue
-        // with the local drain if the renderer acknowledgement path is absent.
-      }
+      const paused = await lease.waitForPause() as { success?: boolean } | undefined;
+      if (!paused?.success) return false;
     }
 
     const settled = await flushPendingTerminalWritesBeforeHibernate(term);
@@ -238,6 +233,9 @@ export async function runWithTerminalOutputPausedAfterWritesSettle(
 
     operation();
     return true;
+  } catch {
+    // Do not resize an undrained stream; caller retains its retry request.
+    return false;
   } finally {
     lease?.release({ keepPaused: !shouldResumeBackend() });
   }

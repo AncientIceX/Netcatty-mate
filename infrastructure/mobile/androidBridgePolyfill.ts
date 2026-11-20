@@ -32,6 +32,8 @@ interface AndroidNativeBridge {
   resizeSshPty(sessionId: string, cols: number, rows: number): void;
   startLocalShell(reqId: string, sessionId: string, initDir: string): void;
   connectTcpSession(reqId: string, sessionId: string, host: string, port: number): void;
+  setTerminalOutputPaused(reqId: string, sessionId: string, paused: boolean): void;
+  acknowledgeTerminalOutput(sessionId: string, bytes: number): void;
   closeSession(sessionId: string): void;
 
   // SFTP Operations
@@ -567,6 +569,69 @@ export function installAndroidBridgePolyfill(): void {
 
   // Per-session UTF-8 streaming decoder so split multi-byte sequences never corrupt
   const sessionDecoders = new Map<string, TextDecoder>();
+  const flowStates = new Map<string, { direct: boolean; leases: Map<string, number>; barrier: Promise<any> }>();
+  const drainListeners = new Map<string, Set<(payload: any) => void | Promise<void>>>();
+  const drains = new Map<string, { sessionId: string; resolve: (result: any) => void; timer: number }>();
+  const backlogBytes = new Map<string, number>();
+
+  function resetOutputFlow(sessionId: string) {
+    const state = flowStates.get(sessionId);
+    state?.leases.forEach(timer => window.clearTimeout(timer));
+    flowStates.delete(sessionId);
+    for (const [id, drain] of drains) if (drain.sessionId === sessionId) {
+      window.clearTimeout(drain.timer); drains.delete(id);
+      drain.resolve({ success: false, error: 'Terminal session closed' });
+    }
+    sessionDecoders.delete(sessionId);
+    sessionBacklog.delete(sessionId);
+    backlogBytes.delete(sessionId);
+  }
+  function outputFlow(sessionId: string) {
+    let state = flowStates.get(sessionId);
+    if (!state) {
+      state = { direct: false, leases: new Map(), barrier: Promise.resolve({ success: true }) };
+      flowStates.set(sessionId, state);
+    }
+    return state;
+  }
+  function applyOutputPause(sessionId: string) {
+    const state = outputFlow(sessionId);
+    const native = getNative();
+    const paused = state.direct || state.leases.size > 0;
+    // Invoke immediately: native pause posts an ordered WebView barrier. Keep
+    // errors as structured values because flow watermark calls are fire-and-forget.
+    state.barrier = (async () => {
+      try {
+        if (!native?.setTerminalOutputPaused) throw new Error('Native terminal output gate unavailable');
+        await callNativeAsync(id => native.setTerminalOutputPaused(id, sessionId, paused), 5000);
+        if (flowStates.get(sessionId) !== state) throw new Error('Terminal session closed');
+        return { success: true };
+      } catch (error) { return { success: false, error: String(error) }; }
+    })();
+    return state.barrier;
+  }
+  async function drainOutput(sessionId: string) {
+    const callbacks = drainListeners.get(sessionId);
+    if (!callbacks?.size) return { success: true }; // no renderer to drain
+    const requestId = nextReqId('output-drain');
+    return new Promise<any>(resolve => {
+      const timer = window.setTimeout(() => {
+        drains.delete(requestId); resolve({ success: false, error: 'Terminal output drain timed out' });
+      }, 5000);
+      drains.set(requestId, { sessionId, resolve, timer });
+      callbacks.forEach(cb => {
+        try { Promise.resolve(cb({ sessionId, requestId })).catch(() => {}); } catch { /* timeout reports failed drain */ }
+      });
+    });
+  }
+  async function waitOutputPause(sessionId: string, leaseId?: string) {
+    const state = flowStates.get(sessionId);
+    if (!state || (leaseId && !state.leases.has(leaseId))) return { success: false, error: 'Invalid terminal flow pause lease' };
+    const barrier = await state.barrier;
+    if (!barrier.success) return barrier;
+    if (flowStates.get(sessionId) !== state || (leaseId && !state.leases.has(leaseId))) return { success: false, error: 'Terminal flow pause lease expired' };
+    return drainOutput(sessionId);
+  }
 
   // Install global Android hardware back-button handler
   (window as any).__netcattyHandleBackPress = (): boolean => {
@@ -638,7 +703,7 @@ export function installAndroidBridgePolyfill(): void {
       sessionDecoders.set(sessionId, decoder);
     }
     const text = decoder.decode(rawBytes, { stream: true });
-    if (!text) return;
+    if (!text) { getNative()?.acknowledgeTerminalOutput?.(sessionId, rawBytes.length); return; }
 
     const listeners = dataListeners.get(sessionId);
     if (listeners && listeners.size > 0) {
@@ -649,10 +714,12 @@ export function installAndroidBridgePolyfill(): void {
           console.error('[MobileBridge] onSessionData listener error:', err);
         }
       });
+      getNative()?.acknowledgeTerminalOutput?.(sessionId, rawBytes.length);
     } else {
-      const prev = sessionBacklog.get(sessionId) || '';
-      const combined = prev + text;
-      sessionBacklog.set(sessionId, combined.length > 128 * 1024 ? combined.slice(-128 * 1024) : combined);
+      // Withhold native credit while no renderer is attached. The native
+      // 64KiB window bounds this backlog without deleting any terminal bytes.
+      sessionBacklog.set(sessionId, (sessionBacklog.get(sessionId) || '') + text);
+      backlogBytes.set(sessionId, (backlogBytes.get(sessionId) || 0) + rawBytes.length);
     }
   };
 
@@ -695,7 +762,7 @@ export function installAndroidBridgePolyfill(): void {
     if (eventType === 'terminal_error') {
       const reqId = payload?.reqId;
       const sessionId = payload?.sessionId;
-      if (sessionId) cancelPendingPasteWrites(sessionId);
+      if (sessionId) { cancelPendingPasteWrites(sessionId); resetOutputFlow(sessionId); }
       const errorMsg = payload?.error || 'Connection error';
       if (reqId && pendingConnects.has(reqId)) {
         const pending = pendingConnects.get(reqId)!;
@@ -727,7 +794,7 @@ export function installAndroidBridgePolyfill(): void {
       const sessionId = payload?.sessionId;
       if (sessionId) {
         cancelPendingPasteWrites(sessionId);
-        sessionDecoders.delete(sessionId);
+        resetOutputFlow(sessionId);
         const set = exitListeners.get(sessionId);
         set?.forEach((cb) => {
           try {
@@ -1011,7 +1078,7 @@ export function installAndroidBridgePolyfill(): void {
       if (!native) {
         throw new Error('Android NativeBridge is not available');
       }
-      sessionBacklog.delete(sessionId);
+      resetOutputFlow(sessionId);
       cancelPendingPasteWrites(sessionId);
       return new Promise<string>((resolve, reject) => {
         const reqId = nextReqId('ssh-conn');
@@ -1187,22 +1254,59 @@ export function installAndroidBridgePolyfill(): void {
       }
     },
 
+    // Android has no Windows ConPTY screen buffer; never clear SSH output.
     clearSessionPtyBuffer: () => {},
-    setSessionFlowPaused: () => {},
-    setSessionFlowPausedAndWait: unsupportedMobile,
-    acquireSessionFlowPauseLease: unsupportedMobile,
-    waitSessionFlowPauseLease: unsupportedMobile,
-    releaseSessionFlowPauseLease: unsupportedMobile,
-    onTerminalOutputDrainRequest: () => () => {},
-    respondTerminalOutputDrain: () => {},
+    setSessionFlowPaused: (sessionId: string, paused: boolean) => {
+      outputFlow(sessionId).direct = paused;
+      void applyOutputPause(sessionId);
+    },
+    setSessionFlowPausedAndWait: async (sessionId: string, paused: boolean) => {
+      outputFlow(sessionId).direct = paused;
+      const result = await applyOutputPause(sessionId);
+      return result.success && paused ? waitOutputPause(sessionId) : result;
+    },
+    acquireSessionFlowPauseLease: async (sessionId: string) => {
+      const state = outputFlow(sessionId);
+      const leaseId = nextReqId('flow-lease');
+      // Expire abandoned tokens, but never override another lease/direct pause.
+      const timer = window.setTimeout(() => {
+        if (flowStates.get(sessionId) !== state || !state.leases.delete(leaseId)) return;
+        void applyOutputPause(sessionId);
+      }, 30000);
+      state.leases.set(leaseId, timer);
+      const result = await applyOutputPause(sessionId);
+      if (!result.success) {
+        window.clearTimeout(timer); state.leases.delete(leaseId);
+        void applyOutputPause(sessionId);
+        return result;
+      }
+      return { success: true, leaseId };
+    },
+    waitSessionFlowPauseLease: waitOutputPause,
+    releaseSessionFlowPauseLease: async (sessionId: string, leaseId: string, options?: { keepPaused?: boolean }) => {
+      const state = flowStates.get(sessionId);
+      const timer = state?.leases.get(leaseId);
+      if (!state || timer === undefined) return { success: false, error: 'Invalid terminal flow pause lease' };
+      window.clearTimeout(timer); state.leases.delete(leaseId);
+      if (options?.keepPaused) state.direct = true;
+      return applyOutputPause(sessionId);
+    },
+    onTerminalOutputDrainRequest: (sessionId: string, cb: (payload: any) => void | Promise<void>) => {
+      if (!drainListeners.has(sessionId)) drainListeners.set(sessionId, new Set());
+      drainListeners.get(sessionId)!.add(cb);
+      return () => { const set = drainListeners.get(sessionId); set?.delete(cb); if (!set?.size) drainListeners.delete(sessionId); };
+    },
+    respondTerminalOutputDrain: (requestId: string) => {
+      const pending = drains.get(requestId);
+      if (pending) { window.clearTimeout(pending.timer); drains.delete(requestId); pending.resolve({ success: true }); }
+    },
     notifyTerminalSessionDisplayReady: () => {},
     ackSessionFlow: () => {},
 
     closeSession: (sessionId: string) => {
       const native = getNative();
       cancelPendingPasteWrites(sessionId);
-      sessionBacklog.delete(sessionId);
-      sessionDecoders.delete(sessionId);
+      resetOutputFlow(sessionId);
       if (native && sessionId) {
         native.closeSession(sessionId);
       }
@@ -1215,7 +1319,9 @@ export function installAndroidBridgePolyfill(): void {
         dataListeners.set(sessionId, new Set());
       }
       let active = true;
-      let replaying = Boolean(options?.replayBacklog && sessionBacklog.has(sessionId));
+      // An unattached renderer owns undelivered bytes, not scrollback history.
+      // Always replay them; replayBacklog=false must not discard live output.
+      let replaying = sessionBacklog.has(sessionId);
       const queued: Array<[string, any]> = [];
       const listener = (data: string, meta?: any) => {
         if (!active) return;
@@ -1223,15 +1329,22 @@ export function installAndroidBridgePolyfill(): void {
         else cb(data, meta);
       };
       dataListeners.get(sessionId)!.add(listener);
-      if (options?.replayBacklog && sessionBacklog.has(sessionId)) {
+      if (replaying) {
         const backlog = sessionBacklog.get(sessionId)!;
+        const credit = backlogBytes.get(sessionId) || 0;
         sessionBacklog.delete(sessionId);
+        backlogBytes.delete(sessionId);
         if (backlog) {
           queueMicrotask(() => {
-            if (!active) return;
+            if (!active) {
+              sessionBacklog.set(sessionId, backlog + (sessionBacklog.get(sessionId) || ''));
+              backlogBytes.set(sessionId, credit + (backlogBytes.get(sessionId) || 0));
+              return;
+            }
             try {
               cb(backlog, undefined);
             } catch {}
+            getNative()?.acknowledgeTerminalOutput?.(sessionId, credit);
             // Replay first; output arriving between subscribe and this microtask
             // must not overtake it and corrupt the terminal's escape sequences.
             while (active && queued.length) {

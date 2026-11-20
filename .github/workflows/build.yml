@@ -6,6 +6,9 @@ on:
     tags: [ 'v*' ]
   workflow_dispatch:
     inputs:
+      flow_only:
+        type: boolean
+        default: false
       scripts_only:
         type: boolean
         default: false
@@ -56,6 +59,32 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/boot-tools" --ignore-scripts playwright@1.58.2
           export PLAYWRIGHT_MODULE="$RUNNER_TEMP/boot-tools/node_modules/playwright/index.mjs"
           "$RUNNER_TEMP/boot-tools/node_modules/.bin/playwright" install --with-deps chromium
+          mkdir -p flow-smoke-results
+          cp infrastructure/mobile/androidBridgePolyfill.ts "$RUNNER_TEMP/flow-fixed-bridge.ts"
+          cp components/terminal/runtime/terminalUnfocusedRepaint.ts "$RUNNER_TEMP/flow-fixed-repaint.ts"
+          git show v3.1.8:infrastructure/mobile/androidBridgePolyfill.ts > "$RUNNER_TEMP/flow-old-bridge.ts"
+          if BRIDGE_SOURCE="$RUNNER_TEMP/flow-old-bridge.ts" node scripts/mobile-flow-test.mjs > flow-smoke-results/baseline-source.log 2>&1; then
+            echo 'Flow regression did not detect v3.1.8'; exit 1
+          fi
+          node scripts/mobile-flow-test.mjs
+          cp "$RUNNER_TEMP/flow-old-bridge.ts" infrastructure/mobile/androidBridgePolyfill.ts
+          git show v3.1.8:components/terminal/runtime/terminalUnfocusedRepaint.ts > components/terminal/runtime/terminalUnfocusedRepaint.ts
+          VITE_TERMINAL_FLOW_TEST=1 npm run build
+          node scripts/mobile-flow-smoke.mjs --baseline
+          cp "$RUNNER_TEMP/flow-fixed-bridge.ts" infrastructure/mobile/androidBridgePolyfill.ts
+          cp "$RUNNER_TEMP/flow-fixed-repaint.ts" components/terminal/runtime/terminalUnfocusedRepaint.ts
+          VITE_TERMINAL_FLOW_TEST=1 npm run build
+          node scripts/mobile-flow-smoke.mjs
+          # Build the shipping bundle without the read-only buffer test hook.
+          npm run build
+          if [ "${{ inputs.flow_only }}" = "true" ]; then
+            node scripts/mobile-bridge-test.mjs
+            npx tsc --noEmit -p tsconfig.json > mobile-typecheck.log 2>&1 || true
+            if grep -E '^(infrastructure/mobile/|components/terminal/runtime/terminalUnfocusedRepaint|components/terminal/useTerminalEffects)' mobile-typecheck.log; then exit 1; fi
+            mkdir -p android/assets/www
+            cp -r dist/* android/assets/www/
+            exit 0
+          fi
           if [ "${{ inputs.scripts_only }}" = "true" ]; then
             npm run build
             node scripts/mobile-scripts-smoke.mjs
@@ -155,6 +184,7 @@ jobs:
             chat-smoke-results/
             cloud-read-results/
             scripts-smoke-results/
+            flow-smoke-results/
 
       - name: Download JSch 0.2.21 & BouncyCastle 1.79 Libraries
         run: |
@@ -162,6 +192,12 @@ jobs:
           curl -fsSL https://repo1.maven.org/maven2/com/github/mwiede/jsch/0.2.21/jsch-0.2.21.jar -o build_libs/jsch.jar
           curl -fsSL https://repo1.maven.org/maven2/org/bouncycastle/bcprov-jdk18on/1.79/bcprov-jdk18on-1.79.jar -o build_libs/bcprov.jar
           ls -lh build_libs/
+
+      - name: Execute production terminal output gate concurrency test
+        run: |
+          mkdir -p "$RUNNER_TEMP/flow-classes"
+          javac -source 8 -target 8 -d "$RUNNER_TEMP/flow-classes" android/src/de/newaii/netcatty/TerminalOutputFlow.java scripts/TerminalOutputFlowIntegration.java
+          java -cp "$RUNNER_TEMP/flow-classes" TerminalOutputFlowIntegration
 
       - name: Execute native encrypted backup store integration
         run: |

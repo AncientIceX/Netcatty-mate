@@ -508,7 +508,12 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void emitRawTerminalBytes(final String sessionId, byte[] buf, int len) {
+    private final java.util.concurrent.ConcurrentHashMap<String, TerminalOutputFlow> terminalOutputFlows = new java.util.concurrent.ConcurrentHashMap<String, TerminalOutputFlow>();
+
+    private void emitRawTerminalBytes(final String sessionId, final TerminalOutputFlow flow, byte[] buf, final int len) throws Exception {
+        synchronized (flow) {
+        flow.reserve(len);
+        if (terminalOutputFlows.get(sessionId) != flow) throw new java.io.IOException("Stale terminal output");
         if (len <= 0) return;
         byte[] slice = new byte[len];
         System.arraycopy(buf, 0, slice, 0, len);
@@ -516,17 +521,20 @@ public class MainActivity extends Activity {
         mainHandler.post(new Runnable() {
             @Override
             public void run() {
-                if (webView != null) {
+                if (webView != null && terminalOutputFlows.get(sessionId) == flow && !flow.isClosed()) {
                     webView.evaluateJavascript(
-                            "window.__onTerminalBytesB64 && window.__onTerminalBytesB64('" + sessionId + "','" + b64 + "');",
+                            "window.__onTerminalBytesB64 && window.__onTerminalBytesB64(" + JSONObject.quote(sessionId) + ",'" + b64 + "');",
                             null);
                 }
             }
         });
+        }
     }
 
     private void closeSessionInternal(String sessionId) {
         if (sessionId == null || sessionId.isEmpty()) return;
+        TerminalOutputFlow flow = terminalOutputFlows.remove(sessionId);
+        if (flow != null) flow.close();
         SshContext sc = sshSessions.remove(sessionId);
         if (sc != null) {
             try {
@@ -1956,6 +1964,8 @@ public class MainActivity extends Activity {
                         ctx.shellOut = os;
                         sshSessions.put(sessionId, ctx);
 
+                        final TerminalOutputFlow outputFlow = new TerminalOutputFlow();
+                        terminalOutputFlows.put(sessionId, outputFlow);
                         JSONObject openEv = new JSONObject();
                         openEv.put("reqId", reqId);
                         openEv.put("sessionId", sessionId);
@@ -1973,8 +1983,9 @@ public class MainActivity extends Activity {
                         byte[] buf = new byte[16384];
                         int n;
                         while ((n = is.read(buf)) != -1) {
-                            emitRawTerminalBytes(sessionId, buf, n);
+                            emitRawTerminalBytes(sessionId, outputFlow, buf, n);
                         }
+                        outputFlow.finish();
 
                         int exitCode = channel.getExitStatus();
                         closeSessionInternal(sessionId);
@@ -2112,6 +2123,8 @@ public class MainActivity extends Activity {
                         final Process proc = pb.start();
                         localShells.put(sessionId, proc);
 
+                        final TerminalOutputFlow outputFlow = new TerminalOutputFlow();
+                        terminalOutputFlows.put(sessionId, outputFlow);
                         JSONObject openEv = new JSONObject();
                         openEv.put("reqId", reqId);
                         openEv.put("sessionId", sessionId);
@@ -2122,8 +2135,9 @@ public class MainActivity extends Activity {
                         byte[] buf = new byte[4096];
                         int n;
                         while ((n = is.read(buf)) != -1) {
-                            emitRawTerminalBytes(sessionId, buf, n);
+                            emitRawTerminalBytes(sessionId, outputFlow, buf, n);
                         }
+                        outputFlow.finish();
                         int code = proc.waitFor();
                         localShells.remove(sessionId);
                         JSONObject exitEv = new JSONObject();
@@ -2161,6 +2175,8 @@ public class MainActivity extends Activity {
                         long rtt = System.currentTimeMillis() - t0;
                         tcpSockets.put(sessionId, sock);
 
+                        final TerminalOutputFlow outputFlow = new TerminalOutputFlow();
+                        terminalOutputFlows.put(sessionId, outputFlow);
                         JSONObject openEv = new JSONObject();
                         openEv.put("reqId", reqId);
                         openEv.put("sessionId", sessionId);
@@ -2173,8 +2189,9 @@ public class MainActivity extends Activity {
                         byte[] buf = new byte[4096];
                         int n;
                         while ((n = is.read(buf)) != -1) {
-                            emitRawTerminalBytes(sessionId, buf, n);
+                            emitRawTerminalBytes(sessionId, outputFlow, buf, n);
                         }
+                        outputFlow.finish();
                         tcpSockets.remove(sessionId);
                         JSONObject exitEv = new JSONObject();
                         exitEv.put("sessionId", sessionId);
@@ -2192,6 +2209,36 @@ public class MainActivity extends Activity {
                     }
                 }
             });
+        }
+
+        @JavascriptInterface
+        public void acknowledgeTerminalOutput(final String sessionId, final int bytes) {
+            TerminalOutputFlow flow = terminalOutputFlows.get(sessionId);
+            if (flow != null) flow.acknowledge(bytes);
+        }
+
+        @JavascriptInterface
+        public void setTerminalOutputPaused(final String reqId, final String sessionId, final boolean paused) {
+            // This runs on the bridge thread, NOT the read worker or main thread.
+            // Holding the gate while posting the barrier orders it after all
+            // previously reserved output posts and before any later output.
+            final TerminalOutputFlow flow = terminalOutputFlows.get(sessionId);
+            try {
+                if (flow == null) throw new java.io.IOException("Terminal session closed");
+                synchronized (flow) {
+                    flow.setPaused(paused);
+                    JSONObject result = new JSONObject();
+                    result.put("reqId", reqId);
+                    result.put("ok", true);
+                    emitToJs("async_response", result);
+                }
+            } catch (Exception e) {
+                try {
+                    JSONObject result = new JSONObject();
+                    result.put("reqId", reqId); result.put("ok", false); result.put("error", e.toString());
+                    emitToJs("async_response", result);
+                } catch (Exception ignored) {}
+            }
         }
 
         @JavascriptInterface

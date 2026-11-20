@@ -677,6 +677,19 @@ export function useTerminalEffects(ctx: TerminalEffectsContext) {
         );
 
         const term = runtime.term;
+        if (import.meta.env.VITE_TERMINAL_FLOW_TEST === '1') {
+          (window as any).__terminalFlowReadBuffer = () => {
+            const buffer = term.buffer.active;
+            const lines: string[] = [];
+            for (let i = 0; i < buffer.length; i++) {
+              const line = buffer.getLine(i);
+              const text = line?.translateToString(true) || '';
+              if (line?.isWrapped && lines.length) lines[lines.length - 1] += text;
+              else lines.push(text);
+            }
+            return lines.join('\n').trimEnd();
+          };
+        }
         const restoredReconnect = restoreState === "restored-disconnected";
         if (restoredReconnect) {
           prepareRestoredReconnect?.();
