@@ -751,13 +751,15 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
     shell.addEventListener('focusout', onFocusOut);
     window.addEventListener('netcatty:mobile:close-tool-drawer', onBack);
     window.addEventListener(MOBILE_SHEET_SNAP_EVENT, onSnapRequest);
-    document.addEventListener('keydown', onKey);
+    // Capture on window: terminal-layer key handlers further down the tree may
+    // stop propagation of Escape before it reaches a bubbling document listener.
+    window.addEventListener('keydown', onKey, true);
     return () => {
       shell.removeEventListener('focusin', onFocusIn);
       shell.removeEventListener('focusout', onFocusOut);
       window.removeEventListener('netcatty:mobile:close-tool-drawer', onBack);
       window.removeEventListener(MOBILE_SHEET_SNAP_EVENT, onSnapRequest);
-      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('keydown', onKey, true);
       setSheetTextFocused(false);
     };
   }, [isDrawerOpen, handleCloseSidePanel, applySheetSnap]);
