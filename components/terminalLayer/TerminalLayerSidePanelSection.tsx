@@ -1325,7 +1325,11 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
   }, [activeSidePanelTab, availableSidePanelTabs, partitionSidePanelTabs]);
   // Bottom dock spans the full layer width (below the workspace focus
   // sidebar row), so measure tab overflow against the terminal layer itself.
-  const sidePanelTabFitWidth = (isCompact || isBottomDock) ? terminalLayerWidth : shellWidth;
+  // Phone tab buttons are 44px touch targets (vs 28px on desktop), so budget the
+  // fit with the same reduced width the old drawer used; extra tools go to "⋯".
+  const sidePanelTabFitWidth = isCompact
+    ? Math.min(360, terminalLayerWidth * 0.88)
+    : (isBottomDock ? terminalLayerWidth : shellWidth);
   const { shown: shownSidePanelTabs, collapsed: collapsedSidePanelTabs } = useMemo(
     () => fitTerminalSidePanelTabs({
       shown: configuredShownSidePanelTabs,
