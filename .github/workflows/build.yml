@@ -137,12 +137,15 @@ jobs:
           node scripts/mobile-ai-smoke.mjs
           node scripts/mobile-scripts-smoke.mjs
           cp components/terminalLayer/TerminalLayerSidePanelSection.tsx "$RUNNER_TEMP/fixed-side-panel.tsx"
+          cp components/terminalLayer/TerminalLayerView.tsx "$RUNNER_TEMP/fixed-layer-view.tsx"
           git show v3.1.7:components/terminalLayer/TerminalLayerSidePanelSection.tsx > components/terminalLayer/TerminalLayerSidePanelSection.tsx
+          git show v3.1.7:components/terminalLayer/TerminalLayerView.tsx > components/terminalLayer/TerminalLayerView.tsx
           npm run build
           node scripts/mobile-scripts-smoke.mjs --baseline
           cp "$RUNNER_TEMP/fixed-side-panel.tsx" components/terminalLayer/TerminalLayerSidePanelSection.tsx
+          cp "$RUNNER_TEMP/fixed-layer-view.tsx" components/terminalLayer/TerminalLayerView.tsx
           npm run build
-          node --import tsx --test components/terminalLayer/TerminalLayerSidePanelSection.test.ts components/ScriptsSidePanel.test.ts
+          node --import tsx --test components/terminalLayer/TerminalLayerSidePanelSection.test.ts components/terminalLayer/mobileSheet.test.ts components/ScriptsSidePanel.test.ts
           node --import tsx scripts/mobile-chat-network-test.mjs
           node --import tsx scripts/mobile-privacy-test.mjs
           node --import tsx --test infrastructure/ai/harness/modelPrivacy.test.ts
@@ -279,27 +282,27 @@ jobs:
             --ks-key-alias netcattykey \
             --ks-pass env:ANDROID_SIGNING_PASSWORD \
             --key-pass env:ANDROID_SIGNING_PASSWORD \
-            --out dist_apk/Netcatty-Mate-v3.2.0-Android.apk \
+            --out dist_apk/Netcatty-Mate-v3.3.0-Android.apk \
             build_apk/aligned.apk
 
-          ls -lh dist_apk/Netcatty-Mate-v3.2.0-Android.apk
+          ls -lh dist_apk/Netcatty-Mate-v3.3.0-Android.apk
 
       - name: Verify APK signature and publish build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: netcatty-mate-android-v3.2.0
+          name: netcatty-mate-android-v3.3.0
           path: dist_apk/*.apk
 
       - name: Verify signed APK
         run: |
           BUILD_TOOLS=$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)
-          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" verify --verbose --print-certs dist_apk/Netcatty-Mate-v3.2.0-Android.apk
+          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" verify --verbose --print-certs dist_apk/Netcatty-Mate-v3.3.0-Android.apk
 
-      - name: Publish GitHub Release v3.2.0
+      - name: Publish GitHub Release v3.3.0
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist_apk/Netcatty-Mate-v3.2.0-Android.apk \
+          gh release create "$GITHUB_REF_NAME" dist_apk/Netcatty-Mate-v3.3.0-Android.apk \
             -R AncientIceX/Netcatty-mate --draft=false --prerelease=false \
-            --verify-tag --title "Netcatty Mate v3.2.0" --notes-file android/RELEASE-v3.2.0.md
+            --verify-tag --title "Netcatty Mate v3.3.0" --notes-file android/RELEASE-v3.3.0.md

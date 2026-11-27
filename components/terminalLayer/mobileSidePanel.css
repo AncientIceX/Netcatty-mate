@@ -1,11 +1,10 @@
 /* Temporary mobile presentation only: never persist compact widths/dock changes. */
 @media (max-width: 767px) {
-  [data-mobile-drawer="true"] {
-    position: absolute !important;
-    inset: 0 auto 0 0;
-    height: 100%;
-    z-index: 45 !important;
-    box-shadow: 6px 0 24px #0005;
+  /* Bottom sheet docked under the terminal (sized in TSX via snap heights). */
+  [data-mobile-drawer="true"][data-state="open"] {
+    border-radius: 12px 12px 0 0;
+    box-shadow: 0 -6px 20px #0004;
+    overflow: hidden;
   }
   [data-mobile-drawer] [data-section="terminal-side-panel-resizer"],
   [data-mobile-drawer] .side-panel-desktop-tools { display: none; }

@@ -65,6 +65,16 @@ import { usePluginTerminalSidebar } from '../../application/state/usePluginTermi
 import { PluginTerminalSidebarPageHost } from '../plugins/PluginTerminalSidebar';
 import { PluginContributionIcon } from '../plugins/PluginContributionIcon';
 import { getPaneMagnificationShortcutLabel } from '../../domain/paneMagnification';
+import { useIsCompactViewport } from '../../application/state/compactViewport';
+import {
+  MOBILE_SHEET_SNAP_EVENT,
+  getMobileSheetHeights,
+  getRememberedSheetSnap,
+  nextMobileSheetSnapOnTap,
+  rememberSheetSnap,
+  resolveMobileSheetSnap,
+  type MobileSheetSnap,
+} from './mobileSheet';
 
 const MemoizedSidePanelMountedContent = memo(
   SidePanelMountedContent,
@@ -686,57 +696,71 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
 
   const [resizePreviewWidth, setResizePreviewWidth] = useState<number | null>(null);
   const [resizePreviewHeight, setResizePreviewHeight] = useState<number | null>(null);
-  const [isCompact, setIsCompact] = useState(() => window.matchMedia('(max-width: 767px)').matches);
-  useEffect(() => {
-    const media = window.matchMedia('(max-width: 767px)');
-    const update = () => setIsCompact(media.matches);
-    media.addEventListener('change', update);
-    return () => media.removeEventListener('change', update);
-  }, []);
+  // Phones (≤767px) show the side panel as a Termius-style bottom sheet that
+  // sits *below* the terminal instead of covering it (see mobileSheet.ts).
+  const isCompact = useIsCompactViewport();
   const isDrawerOpen = isCompact && isSidePanelOpenForCurrentTab;
   const isBottomDock = !isCompact && sidePanelPosition === 'bottom';
   const shellRef = useRef<HTMLDivElement>(null);
+  const [sheetSnap, setSheetSnap] = useState<MobileSheetSnap>(getRememberedSheetSnap);
+  // Live height while the handle is being dragged (null = use the snap height).
+  const [sheetDragHeight, setSheetDragHeight] = useState<number | null>(null);
+  // A focused text box inside the sheet (AI composer, script search …) means the
+  // soft keyboard is up; temporarily expand so the input is not squeezed.
+  const [sheetTextFocused, setSheetTextFocused] = useState(false);
+  const applySheetSnap = useCallback((snap: MobileSheetSnap) => {
+    rememberSheetSnap(snap);
+    setSheetSnap(snap);
+  }, []);
   useEffect(() => {
     if (!isDrawerOpen) return;
     const shell = shellRef.current;
     if (!shell) return;
-    const previousFocus = document.activeElement as HTMLElement | null;
-    const siblings = [...(shell.parentElement?.children ?? [])]
-      .filter((node): node is HTMLElement => node instanceof HTMLElement && node !== shell
-        && !node.hasAttribute('data-mobile-panel-backdrop'));
-    const inertValues = siblings.map(node => node.inert);
-    siblings.forEach(node => { node.inert = true; });
-    shell.querySelector<HTMLElement>('[data-mobile-panel-close]')?.focus();
+    // Non-modal on purpose: the terminal above stays interactive so the user
+    // can type, scroll and watch AI/script output while the sheet is open.
+    const isTextTarget = (node: EventTarget | null) => node instanceof HTMLElement
+      && (node.matches('textarea, input:not([type="checkbox"]):not([type="radio"]):not([type="button"])')
+        || node.isContentEditable);
+    const onFocusIn = (event: FocusEvent) => setSheetTextFocused(isTextTarget(event.target));
+    const onFocusOut = (event: FocusEvent) => {
+      if (!shell.contains(event.relatedTarget as Node | null)) setSheetTextFocused(false);
+    };
     const onKey = (event: KeyboardEvent) => {
-      if (event.defaultPrevented) return;
-      // Nested dialogs and menus own their own Escape/Tab first.
-      if (document.querySelector('[role="menu"][data-state="open"], [role="listbox"], [role="dialog"][data-state="open"]:not([data-mobile-drawer])')) return;
-      if (event.key === 'Escape') {
-        event.preventDefault(); event.stopPropagation(); handleCloseSidePanel();
-      } else if (event.key === 'Tab') {
-        const controls = [...shell.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"]')]
-          .filter(node => node.getClientRects().length > 0);
-        const first = controls[0], last = controls[controls.length - 1];
-        if (event.shiftKey && (document.activeElement === first || !shell.contains(document.activeElement))) {
-          event.preventDefault(); last?.focus();
-        } else if (!event.shiftKey && (document.activeElement === last || !shell.contains(document.activeElement))) {
-          event.preventDefault(); first?.focus();
-        }
-      }
+      if (event.defaultPrevented || event.key !== 'Escape') return;
+      if (!shell.contains(document.activeElement)) return;
+      // Nested dialogs and menus own their own Escape first.
+      if (document.querySelector('[role="menu"][data-state="open"], [role="listbox"], [role="dialog"][data-state="open"]')) return;
+      event.preventDefault(); event.stopPropagation(); handleCloseSidePanel();
     };
     const onBack = (event: Event) => {
       event.preventDefault();
       handleCloseSidePanel();
     };
+    const onSnapRequest = (event: Event) => {
+      const snap = (event as CustomEvent<MobileSheetSnap>).detail;
+      if (snap === 'mini' || snap === 'half' || snap === 'full') {
+        // Collapsing (e.g. after running a script) should also drop the keyboard
+        // focus so the terminal output gets the freed space.
+        if (snap === 'mini' && shell.contains(document.activeElement)) {
+          (document.activeElement as HTMLElement | null)?.blur?.();
+        }
+        applySheetSnap(snap);
+      }
+    };
+    shell.addEventListener('focusin', onFocusIn);
+    shell.addEventListener('focusout', onFocusOut);
     window.addEventListener('netcatty:mobile:close-tool-drawer', onBack);
+    window.addEventListener(MOBILE_SHEET_SNAP_EVENT, onSnapRequest);
     document.addEventListener('keydown', onKey);
     return () => {
+      shell.removeEventListener('focusin', onFocusIn);
+      shell.removeEventListener('focusout', onFocusOut);
       window.removeEventListener('netcatty:mobile:close-tool-drawer', onBack);
+      window.removeEventListener(MOBILE_SHEET_SNAP_EVENT, onSnapRequest);
       document.removeEventListener('keydown', onKey);
-      siblings.forEach((node, i) => { node.inert = inertValues[i]; });
-      if (previousFocus?.isConnected) previousFocus.focus({ preventScroll: true });
+      setSheetTextFocused(false);
     };
-  }, [isDrawerOpen, handleCloseSidePanel]);
+  }, [isDrawerOpen, handleCloseSidePanel, applySheetSnap]);
   const shellResizeCleanupRef = useRef<(() => void) | null>(null);
   const updateAvailableSurfaceRef = useRef<() => void>(() => {});
   const [availableSurfaceWidth, setAvailableSurfaceWidth] = useState(0);
@@ -744,6 +768,8 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
   // Full terminal-layer width; unlike `availableSurfaceWidth` this does not
   // subtract the workspace focus sidebar (relevant for the bottom dock).
   const [terminalLayerWidth, setTerminalLayerWidth] = useState(0);
+  // Full terminal-layer height; the phone bottom sheet sizes its snaps from it.
+  const [terminalLayerHeight, setTerminalLayerHeight] = useState(0);
   const [availableSurfaceHeight, setAvailableSurfaceHeight] = useState(0);
   const availableSurfaceHeightRef = useRef(availableSurfaceHeight);
   const [paneHosts, setPaneHosts] = useState<Map<SidePanelTab, HTMLElement>>(new Map());
@@ -804,6 +830,8 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
         focusSidebar?.getBoundingClientRect().width ?? 0,
       );
       setTerminalLayerWidth((current) => current === layerWidth ? current : layerWidth);
+      const layerHeight = terminalLayer.getBoundingClientRect().height;
+      setTerminalLayerHeight((current) => current === layerHeight ? current : layerHeight);
       availableSurfaceWidthRef.current = nextWidth;
       setAvailableSurfaceWidth((current) => current === nextWidth ? current : nextWidth);
       // Bottom dock shares the full terminal layer height; only the host-tree
@@ -949,9 +977,65 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
       sidePanelContentMinimumHeight,
     )
     : 0;
+  const sheetHeights = getMobileSheetHeights(terminalLayerHeight);
+  // While a text box in the sheet has focus the keyboard shrinks the viewport,
+  // so never stay collapsed: expand to full to keep the composer usable.
+  const effectiveSheetSnap: MobileSheetSnap = sheetTextFocused && sheetSnap === 'mini' ? 'full' : sheetSnap;
   const shellSize = isCompact
-    ? (isSidePanelOpenForCurrentTab ? Math.min(360, terminalLayerWidth * 0.88) : 0)
+    ? (isSidePanelOpenForCurrentTab ? (sheetDragHeight ?? sheetHeights[effectiveSheetSnap]) : 0)
     : (isBottomDock ? shellHeight : shellWidth);
+  // Phone sheet and desktop bottom dock both size along the height axis.
+  const usesHeightAxis = isBottomDock || isCompact;
+
+  // Drag on the sheet handle (pointer events cover touch, pen and mouse).
+  const sheetDragRef = useRef<{
+    pointerId: number; startY: number; startHeight: number;
+    lastY: number; lastT: number; velocity: number; moved: boolean;
+  } | null>(null);
+  const handleSheetPointerDown = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    if (!isDrawerOpen) return;
+    const startHeight = shellRef.current?.getBoundingClientRect().height ?? 0;
+    sheetDragRef.current = {
+      pointerId: event.pointerId, startY: event.clientY, startHeight,
+      lastY: event.clientY, lastT: event.timeStamp, velocity: 0, moved: false,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    // Pause xterm re-fits while dragging; one fit happens on release.
+    terminalLayoutSuppressStore.begin();
+  }, [isDrawerOpen]);
+  const handleSheetPointerMove = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    const drag = sheetDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const dy = drag.startY - event.clientY;
+    if (Math.abs(dy) > 6) drag.moved = true;
+    const dt = Math.max(1, event.timeStamp - drag.lastT);
+    // Upward speed in px/ms, lightly smoothed to ignore jittery last samples.
+    drag.velocity = drag.velocity * 0.4 + ((drag.lastY - event.clientY) / dt) * 0.6;
+    drag.lastY = event.clientY;
+    drag.lastT = event.timeStamp;
+    if (drag.moved) {
+      setSheetDragHeight(Math.max(0, Math.min(sheetHeights.full, drag.startHeight + dy)));
+    }
+  }, [sheetHeights.full]);
+  const handleSheetPointerEnd = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    const drag = sheetDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    sheetDragRef.current = null;
+    terminalLayoutSuppressStore.end();
+    setSheetDragHeight(null);
+    if (event.type === 'pointercancel') return;
+    if (!drag.moved) {
+      // Plain tap on the handle toggles between half and full.
+      applySheetSnap(nextMobileSheetSnapOnTap(effectiveSheetSnap));
+      return;
+    }
+    const height = drag.startHeight + (drag.startY - event.clientY);
+    // Finger rested before lifting: treat as a placed drop, not a flick.
+    if (event.timeStamp - drag.lastT > 100) drag.velocity = 0;
+    const target = resolveMobileSheetSnap(height, drag.velocity, sheetHeights);
+    if (target === 'close') handleCloseSidePanel();
+    else applySheetSnap(target);
+  }, [applySheetSnap, effectiveSheetSnap, handleCloseSidePanel, sheetHeights]);
 
   const handleSidePanelResizeStart = useCallback((event: React.MouseEvent) => {
     if (!isSidePanelOpenForCurrentTab) return;
@@ -1239,7 +1323,7 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
   }, [activeSidePanelTab, availableSidePanelTabs, partitionSidePanelTabs]);
   // Bottom dock spans the full layer width (below the workspace focus
   // sidebar row), so measure tab overflow against the terminal layer itself.
-  const sidePanelTabFitWidth = isCompact ? shellSize : (isBottomDock ? terminalLayerWidth : shellWidth);
+  const sidePanelTabFitWidth = (isCompact || isBottomDock) ? terminalLayerWidth : shellWidth;
   const { shown: shownSidePanelTabs, collapsed: collapsedSidePanelTabs } = useMemo(
     () => fitTerminalSidePanelTabs({
       shown: configuredShownSidePanelTabs,
@@ -1270,44 +1354,44 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
 
   return (
     <>
-    {isDrawerOpen && <button type="button" tabIndex={-1}
-      data-mobile-panel-backdrop="true" aria-label={t('terminal.layer.closePanel')}
-      className="absolute inset-0 z-40 bg-black/50"
-      onClick={handleCloseSidePanel} />}
+    {/* Phones: no backdrop — the sheet docks under the terminal (Termius
+        style) so the terminal stays visible and usable while it is open. */}
     <div
       ref={shellRef}
-      role={isDrawerOpen ? 'dialog' : undefined}
-      aria-modal={isDrawerOpen ? true : undefined}
-      aria-label={isDrawerOpen ? t('terminal.layer.scripts') : undefined}
+      role={isDrawerOpen ? 'region' : undefined}
+      aria-label={isDrawerOpen ? (sidePanelToolLabels.get(activeSidePanelTab as SidePanelTab) ?? t('terminal.layer.scripts')) : undefined}
       data-state={isDrawerOpen ? 'open' : undefined}
       data-mobile-drawer={isCompact ? 'true' : undefined}
+      data-sheet-snap={isDrawerOpen ? (sheetDragHeight === null ? effectiveSheetSnap : 'dragging') : undefined}
       inert={activeMagnifiedPane ? true : undefined}
       style={{
-        ...(isBottomDock
+        ...(usesHeightAxis
           ? {
             height: shellSize,
-            maxHeight: getTerminalSidePanelMaxHeight(availableSurfaceHeight),
+            maxHeight: isCompact ? undefined : getTerminalSidePanelMaxHeight(availableSurfaceHeight),
           }
           : {
             width: shellSize,
-            maxWidth: isCompact ? '88%' : getTerminalSidePanelMaxWidth(availableSurfaceWidth),
+            maxWidth: getTerminalSidePanelMaxWidth(availableSurfaceWidth),
           }),
         contain: 'layout paint style',
+        // Animate snaps, but follow the finger 1:1 while dragging.
+        transition: isCompact && sheetDragHeight === null ? 'height 180ms ease-out' : undefined,
       }}
       className={cn(
         'flex-shrink-0 relative z-20',
-        isBottomDock ? 'w-full' : 'h-full',
+        usesHeightAxis ? 'w-full' : 'h-full',
         shellSize === 0 && 'overflow-hidden',
-        // Bottom dock: the section is the first child of the outer flex-col
-        // (stable tree position across dock changes); order-last keeps it
-        // visually below the workspace row. Side dock: order-last moves it to
-        // the right edge when docked right.
-        (sidePanelPosition === 'right' || isBottomDock) && 'order-last',
+        // Bottom dock / phone sheet: the section is the first child of the
+        // outer flex-col (stable tree position across dock changes);
+        // order-last keeps it visually below the workspace row. Side dock:
+        // order-last moves it to the right edge when docked right.
+        (sidePanelPosition === 'right' || usesHeightAxis) && 'order-last',
       )}
       data-section="terminal-side-panel-shell"
       data-side-panel-position={sidePanelPosition}
     >
-      {isSidePanelOpenForCurrentTab && !isAiShellForceHidden && (
+      {isSidePanelOpenForCurrentTab && !isAiShellForceHidden && !isCompact && (
         <div
           className={cn(
             'absolute z-30',
@@ -1343,11 +1427,33 @@ function TerminalLayerSidePanelInner({ ctx, pluginSidebar }: { ctx: SidePanelCon
           ...(isSidePanelOpenForCurrentTab && sidePanelPosition === 'right'
             ? { borderLeft: `1px solid ${sidePanelTheme.separator}` }
             : {}),
-          ...(isSidePanelOpenForCurrentTab && isBottomDock
+          ...(isSidePanelOpenForCurrentTab && usesHeightAxis
             ? { borderTop: `1px solid ${sidePanelTheme.separator}` }
             : {}),
         }}
       >
+        {isDrawerOpen && (
+          // Drag handle: drag to resize/close, tap to toggle half ↔ full.
+          <div
+            role="button"
+            tabIndex={0}
+            aria-label={t('terminal.layer.resizeSplit')}
+            data-mobile-sheet-handle="true"
+            className="flex h-6 w-full flex-shrink-0 cursor-grab touch-none select-none items-center justify-center"
+            onPointerDown={handleSheetPointerDown}
+            onPointerMove={handleSheetPointerMove}
+            onPointerUp={handleSheetPointerEnd}
+            onPointerCancel={handleSheetPointerEnd}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                applySheetSnap(nextMobileSheetSnapOnTap(effectiveSheetSnap));
+              }
+            }}
+          >
+            <span className="h-1 w-10 rounded-full" style={{ backgroundColor: sidePanelTheme.mutedFg, opacity: 0.6 }} />
+          </div>
+        )}
         {isSidePanelOpenForCurrentTab && !isAiShellForceHidden && (
           <ToolbarCustomizeContextMenu
             items={sidePanelCustomizeItems}

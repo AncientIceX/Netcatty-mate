@@ -56,6 +56,8 @@ import { TERMINAL_SIDE_PANEL_INNER_HEADER_CLASS } from './terminalLayer/terminal
 import { isNonPrimaryPointer, primaryOnlyDragHandlers } from './ui/primaryOnlyDrag';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
 import { toast } from './ui/toast';
+import { COMPACT_VIEWPORT_QUERY } from '../application/state/compactViewport';
+import { requestMobileSheetSnap } from './terminalLayer/mobileSheet';
 
 const toolbarIconButtonClass =
   'h-7 w-7 shrink-0 flex items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors disabled:opacity-40 disabled:pointer-events-none';
@@ -527,6 +529,10 @@ const ScriptsSidePanelInner: React.FC<ScriptsSidePanelProps> = ({
         toggleSnippetSelection(snippet.id);
         return;
       }
+      // On phones, shrink the bottom sheet to its mini height so the terminal
+      // output of the command/script is visible right away (no-op on desktop,
+      // where nothing listens for the event).
+      if (window.matchMedia?.(COMPACT_VIEWPORT_QUERY).matches) requestMobileSheetSnap('mini');
       if (isScriptSnippet(snippet)) {
         onRunScript?.(snippet);
         setSubView('running');

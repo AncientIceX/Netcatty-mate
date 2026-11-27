@@ -6,6 +6,7 @@ import { TerminalLayerSidePanelSection } from './TerminalLayerSidePanelSection';
 import { TerminalLayerWorkspaceSection } from './TerminalLayerWorkspaceSection';
 import { terminalLayerViewCtxEqual } from './terminalLayerViewMemo';
 import { useTerminalHostTreeLayoutWidth } from '../../application/state/terminalHostTreeStore';
+import { useIsCompactViewport } from '../../application/state/compactViewport';
 import { resolveTerminalLayerSurfaceStyle } from '../terminalPaneVisibility';
 import type { PluginSidebarHostActions } from '../../application/state/usePluginTerminalSidebar';
 
@@ -18,7 +19,11 @@ function TerminalLayerViewInner({ ctx }: { ctx: TerminalLayerViewContext }) {
     ctx.hibernateHiddenTabs,
   );
 
-  const isBottomDock = ctx.sidePanelPosition === 'bottom';
+  // Phones always stack the side panel under the terminal as a bottom sheet
+  // (Termius style), regardless of the desktop dock preference, which is
+  // left untouched so desktop/tablet layouts keep the user's choice.
+  const isCompact = useIsCompactViewport();
+  const isBottomDock = isCompact || ctx.sidePanelPosition === 'bottom';
 
   return (
     <div
