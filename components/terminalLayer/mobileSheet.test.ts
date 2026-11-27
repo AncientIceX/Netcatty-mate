@@ -17,7 +17,7 @@ test('snap heights keep terminal rows visible on a 390x844 phone', () => {
 
 test('short viewport (keyboard open) still leaves a terminal strip', () => {
   const h = getMobileSheetHeights(300);
-  assert.equal(h.full, 240);
+  assert.equal(h.full, 225);
   assert.ok(h.half <= h.full && h.half >= h.mini);
 });
 

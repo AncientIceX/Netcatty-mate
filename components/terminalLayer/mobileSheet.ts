@@ -32,9 +32,9 @@ export const MOBILE_SHEET_FLICK_VELOCITY = 0.5;
 export function getMobileSheetHeights(layerHeight: number): MobileSheetHeights {
   const height = Math.max(0, Math.round(layerHeight));
   const mini = Math.min(MOBILE_SHEET_MINI_HEIGHT, height);
-  // On short viewports (e.g. soft keyboard open) keep at least a 20% strip of
+  // On short viewports (e.g. soft keyboard open) keep at least a 25% strip of
   // terminal instead of the fixed reserve, so the sheet stays usable.
-  const reserve = Math.min(MOBILE_SHEET_TERMINAL_RESERVE, Math.round(height * 0.2));
+  const reserve = Math.min(MOBILE_SHEET_TERMINAL_RESERVE, Math.round(height * 0.25));
   const full = Math.max(mini, height - reserve);
   const half = Math.min(full, Math.max(mini, Math.round(height * 0.5)));
   return { mini, half, full };
