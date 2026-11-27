@@ -41,8 +41,13 @@ try {
     // Phone: Termius-style bottom sheet under the terminal, terminal keeps full width and stays usable.
     assert.ok(Math.abs(before-after)<2,`terminal squeezed ${before} -> ${after}`);
     const sheet=page.locator('[data-mobile-drawer="true"][data-state="open"]');
-    await page.waitForFunction(()=>document.querySelector('[data-mobile-drawer="true"]')?.dataset.sheetSnap==='half');await page.waitForTimeout(250);
-    const tb=await terminal.boundingBox(),sb=await sheet.boundingBox();
+    await page.waitForFunction(()=>document.querySelector('[data-mobile-drawer="true"]')?.dataset.sheetSnap==='half');
+    // Snap animation (180ms) + xterm's debounced re-fit (250ms) must settle first.
+    await page.waitForTimeout(900);
+    const column=page.locator('[data-section="terminal-workspace-column"]').first();
+    const cb=await column.boundingBox(),sb=await sheet.boundingBox();
+    assert.ok(cb.y+cb.height<=sb.y+2,`terminal area must sit above sheet ${JSON.stringify({cb,sb})}`);
+    const tb=await terminal.boundingBox();
     assert.ok(tb.y+tb.height<=sb.y+2,`terminal must sit above sheet ${JSON.stringify({tb,sb})}`);
     assert.ok(tb.height>=height*0.3,`terminal visible height ${tb.height}`);
     assert.equal(await terminal.evaluate(e=>!!e.closest('[inert]')),false,'terminal must stay interactive');
@@ -58,13 +63,13 @@ try {
     assert.ok(await panel.evaluate(e=>e.scrollWidth<=e.clientWidth+1));
     const handle=page.locator('[data-mobile-sheet-handle]');const snap=()=>page.locator('[data-mobile-drawer="true"]').getAttribute('data-sheet-snap');
     // Tap handle: half -> full, terminal rows still visible above.
-    await handle.click();await page.waitForTimeout(300);assert.equal(await snap(),'full');
+    await handle.click();await page.waitForTimeout(700);assert.equal(await snap(),'full');
     assert.ok((await terminal.boundingBox()).height>=60,'full sheet keeps terminal rows');
     await handle.click();await page.waitForTimeout(300);assert.equal(await snap(),'half');
     // Drag handle down to the mini strip, then off-screen to close.
     const hb=await handle.boundingBox();const hx=hb.x+hb.width/2,hy=hb.y+hb.height/2;
     const drag=async(dy)=>{await page.mouse.move(hx,hy);await page.mouse.down();for(let i=1;i<=12;i++){await page.mouse.move(hx,hy+dy*i/12);await page.waitForTimeout(25);}await page.waitForTimeout(150);await page.mouse.up();await page.waitForTimeout(300);};
-    await drag(height*0.5-110);assert.equal(await snap(),'mini');
+    await drag(height*0.5-110);assert.equal(await snap(),'mini');await page.waitForTimeout(700);
     assert.ok((await terminal.boundingBox()).height>=height*0.6,'mini sheet frees the terminal');
     const hb2=await handle.boundingBox();await page.mouse.move(hb2.x+hb2.width/2,hb2.y+5);await page.mouse.down();for(let i=1;i<=8;i++){await page.mouse.move(hb2.x+hb2.width/2,hb2.y+5+10*i);await page.waitForTimeout(25);}await page.waitForTimeout(150);await page.mouse.up();
     await panel.waitFor({state:'hidden'});
@@ -75,7 +80,7 @@ try {
     await panel.locator('[data-mobile-panel-close]').focus();await page.keyboard.press('Escape');await panel.waitFor({state:'hidden'});
     await open.click();await panel.waitFor({state:'visible'});assert.equal(await page.evaluate(()=>window.__netcattyHandleBackPress()),true);await panel.waitFor({state:'hidden'});
     // Terminal stays tappable while the sheet is open.
-    await open.click();await panel.waitFor({state:'visible'});await page.waitForTimeout(300);
+    await open.click();await panel.waitFor({state:'visible'});await page.waitForTimeout(700);
     const tb2=await terminal.boundingBox();await page.mouse.click(tb2.x+tb2.width/2,tb2.y+20);await page.waitForTimeout(150);
     assert.ok(await page.evaluate(()=>!!document.activeElement?.closest('.xterm')),'terminal focus while sheet open');
     await page.screenshot({path:`scripts-smoke-results/${width}-${theme}.png`});
