@@ -515,6 +515,7 @@ function TerminalViewInner({ ctx, isPaneMagnified = false }: { ctx: TerminalView
   }, [isMobileTouch, sessionId]);
   const ctrlArmed = mobileMods.ctrl;
   const altArmed = mobileMods.alt;
+  const tapStartRef = useRef<{ x: number; y: number; t: number } | null>(null);
   /** Focus xterm's hidden textarea so Android raises the soft keyboard. */
   const focusTerminalInput = useCallback(() => {
     const term = termRef.current;
@@ -1201,9 +1202,19 @@ function TerminalViewInner({ ctx, isPaneMagnified = false }: { ctx: TerminalView
             showHostInfoBar && "pt-8",
           )}
           style={{ backgroundColor: 'var(--terminal-ui-bg)' }}
-          onClick={isMobileTouch && status === 'connected' ? (e) => {
+          // Capture-phase pointer handlers: xterm cancels touchstart, which
+          // suppresses the synthetic click on many WebViews, so a bubbling
+          // onClick never fires for taps on the terminal.
+          onPointerDownCapture={isMobileTouch ? (e) => {
+            tapStartRef.current = { x: e.clientX, y: e.clientY, t: e.timeStamp };
+          } : undefined}
+          onPointerUpCapture={isMobileTouch && status === 'connected' ? (e) => {
             // Tap on the terminal raises the soft keyboard (Termius-style),
-            // but never while the user is selecting text or using a toolbar.
+            // but not for scroll/drag gestures, text selection or toolbars.
+            const start = tapStartRef.current;
+            tapStartRef.current = null;
+            if (!start || Math.hypot(e.clientX - start.x, e.clientY - start.y) > 10) return;
+            if (e.timeStamp - start.t > 500) return;
             const target = e.target as Element | null;
             if (target?.closest('button, input, textarea:not(.xterm-helper-textarea), [role="dialog"], a')) return;
             if (termRef.current?.hasSelection()) return;
