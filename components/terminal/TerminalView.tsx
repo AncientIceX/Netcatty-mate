@@ -3,6 +3,12 @@ import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
 import type { Terminal as XTerm } from '@xterm/xterm';
 import { ChevronsLeft, GripVertical, Minimize2, Network, PanelLeft, X as XIcon } from 'lucide-react';
 import { isTerminalSensitiveInputActive } from './runtime/terminalSensitiveInputRegistry';
+import {
+  applyMobileInputModifiers,
+  getMobileInputModifiers,
+  onMobileInputModifiersChange,
+  setMobileInputModifiers,
+} from '../../infrastructure/mobile/mobileInputModifiers';
 import { isSessionReconnectDisabled } from '../top-tabs/SessionTabContextMenuContent';
 
 import { resolveEffectiveTerminalProtocol } from '../../domain/terminalProtocol';
@@ -496,25 +502,44 @@ function terminalViewCtxEqual(
 function TerminalViewInner({ ctx, isPaneMagnified = false }: { ctx: TerminalViewContext; isPaneMagnified?: boolean }) {
   const { Activity, Button, Clock3, Copy, Maximize2, Radio, RefreshCcw, SquareArrowOutUpRight, TerminalAutocomplete, TerminalComposeBar, TerminalConnectionDialog, TerminalContextMenu, TerminalSearchBar, Tooltip, TooltipContent, TooltipTrigger, Unplug, ZmodemOverwriteDialog, ZmodemProgressIndicator, auth, autocompleteAcceptTextRef, autocompleteCloseRef, autocompleteHostOs, autocompleteInputRef, autocompleteKeyEventRef, autocompleteRepositionRef, autocompleteSettings, canUpdateHost, chainProgress, cn, compactToolbar, lineTimestampsAvailable, containerRef, effectiveFontSize, effectiveFontWeight, effectiveTerminalProtocol, effectiveTheme, error, executeSnippet, executeSnippetCommand, handleAddSelectionToAI, handleCancelConnect, handleCloseDisconnectedSession, handleCloseSearch, handleDisconnect, handleDismissDisconnectedDialog, handleDragEnter, handleDragLeave, handleDragOver, handleDrop, handleFindNext, handleFindPrevious, handleHostKeyAddAndContinue, handleHostKeyClose, handleHostKeyContinue, handleOsc52ReadResponse, handleOsc7SetupConfirm, handleOsc7SetupOpenChange, handleReceiveYmodem, handleRetry, handleSearch, handleSendYmodem, handleTopOverlayMouseDownCapture, hasMouseTracking, host, hotkeyScheme, inWorkspace, isBroadcastEnabled, composeSendToAll, onToggleComposeSendTarget, isCancelling, isComposeBarOpen, isConnectionAwaitingUserInput, isDraggingOver, isFocusMode, isFocusedPane, isLocalConnection, remoteDragDropUsesZmodem, isPluginTerminalProviderAvailable, isReconnectActive, isSerialConnection, isSearchOpen, isSupportedOs, isSystemSidebarEligible, isVisible, keyBindings, keys, identities, knownCwdRef, needsHostKeyVerification, onCloseSession, onDetach, onDetachPointerDown, onExpandToFocus, onTogglePaneMagnification, onOpenSystem, onRename, onSplitHorizontal, onSplitVertical, onToggleBroadcast, onUpdateHost, osc52ReadPromptVisible, osc7SetupOpen, osc7SetupRunning, passwordPromptActiveRef, pendingHostKeyInfo, progressLogs, progressValue, renderControls, resolvedFontFamily, restoreState, scriptExecutionOverlay, searchMatchCount, searchFocusToken, sessionDisplayName, sessionId, workspaceId, sessionRef, setIsComposeBarOpen, setShowLogs, shouldShowConnectionDialog, showDisconnectedTerminalNotice, showConnectionControls, showLogs, showSelectionAIAction, isRestoringSelectionRef, snippets, status, sudoHintRef, sudoHintText, passwordPickerState, onPasswordPickerSelect, passwordPickerTitle, passwordPickerEmptyText, t, termRef, terminalContextActions, terminalCwdTracker, terminalPreviewVars, terminalSettings, terminalReconnectAvailable, reconnectNoticeMessage, connectionDeadlineAt, connectionTimeoutSeconds, toast, zmodem } = ctx;
   const isMobileTouch = typeof window !== 'undefined' && Boolean(window.__netcattyMobileMode || window.NativeBridge || window.innerWidth < 768);
-  const [ctrlArmed, setCtrlArmed] = useState(false);
-  const [altArmed, setAltArmed] = useState(false);
+  // Sticky Ctrl/Alt live in a per-session store so the bridge can also apply
+  // them to the next character typed on the Android soft keyboard (IME input
+  // reaches the session through xterm onData, not through this keybar).
+  const [mobileMods, setMobileMods] = useState(() => getMobileInputModifiers(sessionId));
+  useEffect(() => {
+    if (!isMobileTouch) return undefined;
+    setMobileMods(getMobileInputModifiers(sessionId));
+    return onMobileInputModifiersChange((id, mods) => {
+      if (id === sessionId) setMobileMods(mods);
+    });
+  }, [isMobileTouch, sessionId]);
+  const ctrlArmed = mobileMods.ctrl;
+  const altArmed = mobileMods.alt;
+  /** Focus xterm's hidden textarea so Android raises the soft keyboard. */
+  const focusTerminalInput = useCallback(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.focus();
+    // Some WebViews only show the IME for a focus inside a user gesture on the
+    // textarea itself; focusing it explicitly is harmless when already focused.
+    term.textarea?.focus({ preventScroll: true });
+    window.NativeBridge?.showSoftKeyboard?.();
+  }, [termRef]);
   const sendMobileKey = useCallback((seq: string) => {
     window.NativeBridge?.vibrateShort?.();
-    let out = seq;
-    if (ctrlArmed && seq.length === 1) {
-      const code = seq.toUpperCase().charCodeAt(0);
-      if (code >= 64 && code <= 95) {
-        out = String.fromCharCode(code - 64);
-      }
-      setCtrlArmed(false);
-    }
-    if (altArmed) {
-      out = `\x1b${out}`;
-      setAltArmed(false);
+    // Single characters go through the shared modifier transform; escape
+    // sequences (arrows, ESC, PgUp...) are sent verbatim like Termius does.
+    const out = seq.length === 1 ? applyMobileInputModifiers(sessionId, seq) : seq;
+    if (seq.length !== 1 && (ctrlArmed || altArmed)) {
+      setMobileInputModifiers(sessionId, { ctrl: false, alt: false });
     }
     window.netcatty?.writeToSession?.(sessionId, out);
-    termRef.current?.focus();
-  }, [altArmed, ctrlArmed, sessionId, termRef]);
+  }, [altArmed, ctrlArmed, sessionId]);
+  /** Arrow keys honour DECCKM so vim/less/htop receive the right sequence. */
+  const sendArrow = useCallback((dir: 'A' | 'B' | 'C' | 'D') => {
+    const appMode = termRef.current?.modes.applicationCursorKeysMode === true;
+    sendMobileKey(appMode ? `\x1bO${dir}` : `\x1b[${dir}`);
+  }, [sendMobileKey, termRef]);
   // Context menu only needs a snapshot at open; avoid selection state lifting into Terminal.
   const [contextMenuHasSelection, setContextMenuHasSelection] = useState(false);
   const isNetworkDevice = host.deviceType === 'network'
@@ -753,7 +778,10 @@ function TerminalViewInner({ ctx, isPaneMagnified = false }: { ctx: TerminalView
         }}
         className={cn(
           "relative h-full w-full flex min-h-0 overflow-hidden",
-          isComposeBarOpen && !inWorkspace && "flex-col"
+          // The mobile keybar is an in-flow sibling of the terminal body; in a
+          // row layout its wide content squeezed the terminal to 0px width
+          // (blank screen, nothing to tap, keys floating mid-screen).
+          ((isComposeBarOpen && !inWorkspace) || isMobileTouch) && "flex-col"
         )}
         style={{
           ...terminalPreviewVars,
@@ -1173,6 +1201,14 @@ function TerminalViewInner({ ctx, isPaneMagnified = false }: { ctx: TerminalView
             showHostInfoBar && "pt-8",
           )}
           style={{ backgroundColor: 'var(--terminal-ui-bg)' }}
+          onClick={isMobileTouch && status === 'connected' ? (e) => {
+            // Tap on the terminal raises the soft keyboard (Termius-style),
+            // but never while the user is selecting text or using a toolbar.
+            const target = e.target as Element | null;
+            if (target?.closest('button, input, textarea:not(.xterm-helper-textarea), [role="dialog"], a')) return;
+            if (termRef.current?.hasSelection()) return;
+            focusTerminalInput();
+          } : undefined}
         >
           {showNetworkDeviceTip && (
             <div
@@ -1501,62 +1537,82 @@ function TerminalViewInner({ ctx, isPaneMagnified = false }: { ctx: TerminalView
           />
         )}
 
-        {/* Mobile Touch Keybar for SSH / Shell */}
+        {/* Mobile Touch Keybar for SSH / Shell (Termius-style, docked above the IME) */}
         {isMobileTouch && status === 'connected' && (
           <div
-            className="shrink-0 flex items-center gap-1 px-2 py-1.5 overflow-x-auto no-scrollbar border-t border-white/10 select-none"
-            style={{ backgroundColor: effectiveTheme.colors.background }}
-            onPointerDown={(e) => e.stopPropagation()}
+            data-section="mobile-keybar"
+            className="shrink-0 flex items-center gap-1 px-1.5 py-1 overflow-x-auto no-scrollbar border-t select-none"
+            style={{
+              backgroundColor: effectiveTheme.colors.background,
+              borderColor: 'var(--terminal-ui-border)',
+              color: effectiveTheme.colors.foreground,
+            }}
+            // preventDefault keeps focus in xterm's textarea, so the soft
+            // keyboard stays open while tapping keys (no close/reopen flicker).
+            onPointerDown={(e) => { e.stopPropagation(); e.preventDefault(); }}
+            onMouseDown={(e) => e.preventDefault()}
           >
-            {[
+            {([
+              { label: '⌨', title: 'Keyboard', action: 'keyboard' },
               { label: 'ESC', seq: '\x1b' },
               { label: 'TAB', seq: '\t' },
-              { label: 'CTRL', toggle: 'ctrl' as const },
-              { label: 'ALT', toggle: 'alt' as const },
-              { label: '↑', seq: '\x1b[A' },
-              { label: '↓', seq: '\x1b[B' },
-              { label: '←', seq: '\x1b[D' },
-              { label: '→', seq: '\x1b[C' },
-              { label: 'HOME', seq: '\x1b[H' },
-              { label: 'END', seq: '\x1b[F' },
-              { label: 'PGUP', seq: '\x1b[5~' },
-              { label: 'PGDN', seq: '\x1b[6~' },
-              { label: 'CTRL+C', seq: '\x03' },
-              { label: 'CTRL+D', seq: '\x04' },
-              { label: 'CTRL+Z', seq: '\x1a' },
-              { label: 'CTRL+L', seq: '\x0c' },
+              { label: 'CTRL', toggle: 'ctrl' },
+              { label: 'ALT', toggle: 'alt' },
+              { label: '↑', arrow: 'A' },
+              { label: '↓', arrow: 'B' },
+              { label: '←', arrow: 'D' },
+              { label: '→', arrow: 'C' },
+              { label: '^C', seq: '\x03' },
               { label: '/', seq: '/' },
               { label: '-', seq: '-' },
               { label: '|', seq: '|' },
               { label: '~', seq: '~' },
-            ].map((k) => {
+              { label: 'HOME', seq: '\x1b[H' },
+              { label: 'END', seq: '\x1b[F' },
+              { label: 'PGUP', seq: '\x1b[5~' },
+              { label: 'PGDN', seq: '\x1b[6~' },
+              { label: '^D', seq: '\x04' },
+              { label: '^Z', seq: '\x1a' },
+              { label: '^L', seq: '\x0c' },
+            ] as Array<{ label: string; title?: string; seq?: string; toggle?: 'ctrl' | 'alt'; arrow?: 'A' | 'B' | 'C' | 'D'; action?: 'keyboard' }>).map((k) => {
               const isActive =
                 (k.toggle === 'ctrl' && ctrlArmed) || (k.toggle === 'alt' && altArmed);
               return (
                 <button
                   key={k.label}
                   type="button"
+                  tabIndex={-1}
+                  aria-label={k.title ?? k.label}
+                  aria-pressed={k.toggle ? isActive : undefined}
+                  data-mobile-key={k.label}
                   onClick={() => {
-                    if (k.toggle === 'ctrl') {
-                      window.NativeBridge?.vibrateShort?.();
-                      setCtrlArmed((v) => !v);
-                      termRef.current?.focus();
+                    if (k.action === 'keyboard') {
+                      focusTerminalInput();
                       return;
                     }
-                    if (k.toggle === 'alt') {
+                    if (k.toggle) {
                       window.NativeBridge?.vibrateShort?.();
-                      setAltArmed((v) => !v);
-                      termRef.current?.focus();
+                      setMobileInputModifiers(sessionId, {
+                        ctrl: k.toggle === 'ctrl' ? !ctrlArmed : ctrlArmed,
+                        alt: k.toggle === 'alt' ? !altArmed : altArmed,
+                      });
                       return;
                     }
-                    if (k.seq) sendMobileKey(k.seq);
+                    if (k.arrow) sendArrow(k.arrow);
+                    else if (k.seq) sendMobileKey(k.seq);
                   }}
                   className={cn(
-                    "shrink-0 px-2.5 h-7 rounded text-[11px] font-mono font-medium border transition-colors",
+                    "shrink-0 min-w-[40px] px-2 h-9 rounded-md text-[12px] font-mono font-semibold border transition-colors",
                     isActive
                       ? "bg-primary text-primary-foreground border-primary"
-                      : "bg-white/10 text-white/90 border-white/15 active:bg-white/25",
+                      : "border-current/20 bg-current/10 active:bg-current/25",
                   )}
+                  style={isActive ? undefined : {
+                    color: effectiveTheme.colors.foreground,
+                    // currentColor-derived tint keeps contrast on light and dark themes.
+                    backgroundColor: 'color-mix(in srgb, currentColor 12%, transparent)',
+                    borderColor: 'color-mix(in srgb, currentColor 22%, transparent)',
+                  }}
                 >
                   {k.label}
                 </button>
@@ -1564,8 +1620,14 @@ function TerminalViewInner({ ctx, isPaneMagnified = false }: { ctx: TerminalView
             })}
             <button
               type="button"
+              tabIndex={-1}
               onClick={() => setIsComposeBarOpen(!isComposeBarOpen)}
-              className="shrink-0 px-2.5 h-7 rounded text-[11px] font-mono font-medium border bg-white/10 text-white/90 border-white/15 active:bg-white/25"
+              className="shrink-0 min-w-[40px] px-2 h-9 rounded-md text-[12px] font-mono font-semibold border"
+              style={{
+                color: effectiveTheme.colors.foreground,
+                backgroundColor: 'color-mix(in srgb, currentColor 12%, transparent)',
+                borderColor: 'color-mix(in srgb, currentColor 22%, transparent)',
+              }}
             >
               CMD
             </button>

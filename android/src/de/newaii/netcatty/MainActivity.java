@@ -24,6 +24,7 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.view.inputmethod.InputMethodManager;
 import android.webkit.ConsoleMessage;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
@@ -1830,6 +1831,27 @@ public class MainActivity extends Activity {
             } catch (Exception e) {
                 return "{}";
             }
+        }
+
+        /**
+         * Explicitly raise the soft keyboard for the focused terminal textarea.
+         * WebView sometimes ignores a JS focus() (e.g. after the IME was
+         * dismissed with the Back key), so the keybar's keyboard button and a
+         * tap on the terminal call this as a fallback, like Termius does.
+         */
+        @JavascriptInterface
+        public void showSoftKeyboard() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        if (webView == null) return;
+                        webView.requestFocus();
+                        InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+                        if (imm != null) imm.showSoftInput(webView, InputMethodManager.SHOW_IMPLICIT);
+                    } catch (Exception ignored) {}
+                }
+            });
         }
 
         @JavascriptInterface

@@ -76,6 +76,16 @@ jobs:
           cp "$RUNNER_TEMP/flow-fixed-repaint.ts" components/terminal/runtime/terminalUnfocusedRepaint.ts
           VITE_TERMINAL_FLOW_TEST=1 npm run build
           node scripts/mobile-flow-smoke.mjs
+          # v3.2.0: phone terminal input. Reproduce the v3.1.9 squeezed/blank
+          # terminal with the released TerminalView, then verify the fix.
+          node --test infrastructure/mobile/mobileInputModifiers.test.ts
+          cp components/terminal/TerminalView.tsx "$RUNNER_TEMP/fixed-terminal-view.tsx"
+          git show v3.1.9:components/terminal/TerminalView.tsx > components/terminal/TerminalView.tsx
+          npm run build
+          node scripts/mobile-terminal-input-smoke.mjs --baseline
+          cp "$RUNNER_TEMP/fixed-terminal-view.tsx" components/terminal/TerminalView.tsx
+          npm run build
+          node scripts/mobile-terminal-input-smoke.mjs
           # Build the shipping bundle without the read-only buffer test hook.
           npm run build
           if [ "${{ inputs.flow_only }}" = "true" ]; then
@@ -186,6 +196,7 @@ jobs:
             cloud-read-results/
             scripts-smoke-results/
             flow-smoke-results/
+            terminal-input-results/
 
       - name: Download JSch 0.2.21 & BouncyCastle 1.79 Libraries
         run: |
@@ -268,27 +279,27 @@ jobs:
             --ks-key-alias netcattykey \
             --ks-pass env:ANDROID_SIGNING_PASSWORD \
             --key-pass env:ANDROID_SIGNING_PASSWORD \
-            --out dist_apk/Netcatty-Mate-v3.1.9-Android.apk \
+            --out dist_apk/Netcatty-Mate-v3.2.0-Android.apk \
             build_apk/aligned.apk
 
-          ls -lh dist_apk/Netcatty-Mate-v3.1.9-Android.apk
+          ls -lh dist_apk/Netcatty-Mate-v3.2.0-Android.apk
 
       - name: Verify APK signature and publish build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: netcatty-mate-android-v3.1.9
+          name: netcatty-mate-android-v3.2.0
           path: dist_apk/*.apk
 
       - name: Verify signed APK
         run: |
           BUILD_TOOLS=$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)
-          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" verify --verbose --print-certs dist_apk/Netcatty-Mate-v3.1.9-Android.apk
+          "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" verify --verbose --print-certs dist_apk/Netcatty-Mate-v3.2.0-Android.apk
 
-      - name: Publish GitHub Release v3.1.9
+      - name: Publish GitHub Release v3.2.0
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist_apk/Netcatty-Mate-v3.1.9-Android.apk \
+          gh release create "$GITHUB_REF_NAME" dist_apk/Netcatty-Mate-v3.2.0-Android.apk \
             -R AncientIceX/Netcatty-mate --draft=false --prerelease=false \
-            --verify-tag --title "Netcatty Mate v3.1.9" --notes-file android/RELEASE-v3.1.9.md
+            --verify-tag --title "Netcatty Mate v3.2.0" --notes-file android/RELEASE-v3.2.0.md

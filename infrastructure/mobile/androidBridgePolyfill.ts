@@ -15,6 +15,8 @@
 interface AndroidNativeBridge {
   getDeviceSysInfo(): string;
   vibrateShort(): void;
+  /** Optional: older APKs lack it, callers must feature-test. */
+  showSoftKeyboard?(): void;
   openExternalUrl(url: string): void;
   openExternal(url: string): void;
   requestOpenFilePicker(callbackId: string): void;
@@ -126,6 +128,8 @@ declare global {
     NativeBridge?: AndroidNativeBridge;
     __onNativeEvent?: (eventType: string, b64Payload: string) => void;
     __onTerminalBytesB64?: (sessionId: string, b64Bytes: string) => void;
+    __netcattyApplyMobileInputModifiers?: (sessionId: string, data: string, options?: any) => string;
+    __netcattyClearMobileInputModifiers?: (sessionId: string) => void;
     __handleAndroidBack?: () => boolean;
     __netcattyMobileMode?: boolean;
     __netcattyOpenMobileSettings?: () => void;
@@ -1182,9 +1186,14 @@ export function installAndroidBridgePolyfill(): void {
       return { exists: Boolean(stat), isFile: stat?.type === 'file', isDirectory: stat?.type === 'directory', isExecutable: false };
     },
 
-    writeToSession: (sessionId: string, data: string, options?: any) => {
+    writeToSession: (sessionId: string, rawData: string, options?: any) => {
       const native = getNative();
-      if (!native || !sessionId || !data) return;
+      if (!native || !sessionId || !rawData) return;
+      // Keybar Ctrl/Alt are sticky: apply them to the next single character
+      // typed on the soft keyboard (Termius behaviour). No-op when unarmed.
+      // The hook is installed by mobileInputModifiers.ts (kept out of this file
+      // so the standalone vm bridge tests can still evaluate it without imports).
+      const data = window.__netcattyApplyMobileInputModifiers?.(sessionId, rawData, options) ?? rawData;
       const lineDelayMs = Number(options?.lineDelayMs);
       if (Number.isFinite(lineDelayMs) && lineDelayMs > 0 && data.includes('\n')) {
         const lines = data.replace(/\r\n/g, '\n').split('\n');
@@ -1310,6 +1319,7 @@ export function installAndroidBridgePolyfill(): void {
     ackSessionFlow: () => {},
 
     closeSession: (sessionId: string) => {
+      window.__netcattyClearMobileInputModifiers?.(sessionId);
       const native = getNative();
       cancelPendingPasteWrites(sessionId);
       resetOutputFlow(sessionId);
